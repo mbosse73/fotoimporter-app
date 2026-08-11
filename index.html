@@ -1,0 +1,998 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>Foto-Importer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+:root{
+  --bg-0:#15171c;
+  --bg-1:#1c1f26;
+  --bg-2:#252932;
+  --bg-3:#31363f;
+  --line:#3a4048;
+  --text-0:#eef0f3;
+  --text-1:#a6acb8;
+  --text-2:#6b7280;
+  --accent:#5b9eff;
+  --accent-dim:#2c4a75;
+  --move:#3ba86b;
+  --move-dim:#1e3f2c;
+  --delete:#e0555f;
+  --delete-dim:#4a2529;
+  --focus-ring:#f2c744;
+  --radius:6px;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box;}
+html,body{
+  margin:0;height:100%;background:var(--bg-0);color:var(--text-0);
+  font-size:14px;overflow:hidden;
+}
+button{
+  font-family:inherit;font-size:13px;cursor:pointer;
+  background:var(--bg-3);color:var(--text-0);border:1px solid var(--line);
+  border-radius:var(--radius);padding:7px 14px;transition:background .12s,border-color .12s;
+}
+button:hover{background:#3a4049;border-color:#4a515c;}
+button:active{transform:translateY(1px);}
+button:disabled{opacity:.4;cursor:not-allowed;}
+button:focus-visible, [tabindex]:focus-visible, input:focus-visible, select:focus-visible{
+  outline:2px solid var(--focus-ring);outline-offset:1px;
+}
+button.primary{background:var(--accent);border-color:var(--accent);color:#0a0e14;font-weight:600;}
+button.primary:hover{background:#6faaff;}
+button.danger-solid{background:var(--delete);border-color:var(--delete);color:#1a0708;font-weight:600;}
+button.danger-solid:hover{background:#e8707a;}
+input,select,textarea{
+  font-family:inherit;font-size:13px;background:var(--bg-2);color:var(--text-0);
+  border:1px solid var(--line);border-radius:var(--radius);padding:6px 9px;
+}
+label{font-size:12px;color:var(--text-1);}
+hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
+
+#app{display:flex;flex-direction:column;height:100vh;}
+
+/* ---------- Toolbar ---------- */
+#toolbar{
+  display:flex;align-items:center;gap:10px;
+  padding:10px 14px;background:var(--bg-1);border-bottom:1px solid var(--line);
+  flex-wrap:wrap;
+}
+#toolbar .group{display:flex;align-items:center;gap:8px;}
+#toolbar .sep{width:1px;height:24px;background:var(--line);margin:0 4px;}
+#toolbar .path-label{font-size:12px;color:var(--text-2);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+#toolbar .path-value{font-size:12px;color:var(--text-1);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+#toolbar .spacer{flex:1;}
+#statusText{font-size:12px;color:var(--text-2);}
+
+/* ---------- Grid ---------- */
+#gridWrap{flex:1;overflow-y:auto;padding:16px;outline:none;}
+#grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(150px,1fr));
+  gap:12px;
+}
+.cell{
+  position:relative;background:var(--bg-2);border-radius:var(--radius);
+  overflow:hidden;cursor:pointer;border:2px solid transparent;
+  aspect-ratio:1/1;
+  contain:layout style paint; /* Zelle rendert unabhängig - Statuswechsel einer Zelle
+                                  kann Layout/Malen benachbarter Zellen nicht beeinflussen */
+}
+.cell .thumbBox{
+  width:100%;height:100%;display:flex;align-items:center;justify-content:center;
+  background:var(--bg-3);
+}
+.cell img{width:100%;height:100%;object-fit:cover;display:block;}
+.cell .noThumb{color:var(--text-2);font-size:11px;text-align:center;padding:6px;}
+.cell .fname{
+  position:absolute;left:0;bottom:0;right:0;padding:4px 6px;font-size:10.5px;
+  background:linear-gradient(to top, rgba(0,0,0,.75), transparent);
+  color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.cell .badge{
+  position:absolute;top:5px;right:5px;font-size:10px;font-weight:700;
+  padding:2px 6px;border-radius:4px;letter-spacing:.03em;
+}
+.cell .checkbox{
+  position:absolute;top:5px;left:5px;width:18px;height:18px;border-radius:4px;
+  border:2px solid rgba(255,255,255,.6);background:rgba(0,0,0,.25);
+}
+.cell.checked .checkbox{background:var(--accent);border-color:var(--accent);}
+.cell.checked .checkbox::after{
+  content:"";position:absolute;left:4px;top:0px;width:5px;height:9px;
+  border:solid #0a0e14;border-width:0 2px 2px 0;transform:rotate(40deg);
+}
+.cell.action-move{border-color:var(--move);}
+.cell.action-move .badge{background:var(--move);color:#08170e;}
+.cell.action-delete{border-color:var(--delete);}
+.cell.action-delete .badge{background:var(--delete);color:#1a0708;}
+.cell.cursor{border-color:var(--focus-ring);box-shadow:0 0 0 3px rgba(242,199,68,.35);}
+.cell.selected:not(.cursor){box-shadow:0 0 0 2px var(--accent) inset;}
+.cell.selected{background:var(--bg-3);}
+.cell.filtered-out{display:none;}
+
+/* ---------- Stichwort-Anzeige auf der Kachel ---------- */
+.cell .keywordIndicator{
+  position:absolute;bottom:3px;right:4px;font-size:11px;
+  opacity:0;pointer-events:none;z-index:2;
+  text-shadow:0 1px 2px rgba(0,0,0,.8);
+}
+.cell .keywordIndicator.hasKeywords{opacity:1;}
+.cell .keywordIndicator.hasKeywords::before{content:"🏷";}
+.cell .keywordChipsRow{
+  position:absolute;left:0;right:0;bottom:18px;
+  display:flex;flex-wrap:nowrap;gap:3px;padding:0 5px;overflow:hidden;
+  pointer-events:none;
+}
+.cell .keywordChipsRow.hidden{display:none;}
+.miniKwChip{
+  background:rgba(20,22,28,.82);color:#e8eaf0;border:1px solid rgba(255,255,255,.18);
+  border-radius:4px;font-size:9.5px;line-height:1.5;padding:1px 5px;
+  max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.miniKwChipMore{background:rgba(91,158,255,.35);border-color:var(--accent);font-weight:700;}
+
+#emptyState{
+  color:var(--text-2);text-align:center;padding:60px 20px;font-size:14px;
+}
+#filterEmptyState{
+  color:var(--text-2);text-align:center;padding:60px 20px;font-size:14px;
+}
+
+/* ---------- Filter-Buttons ---------- */
+.filterBtn{
+  padding:6px 12px;border-radius:5px;font-size:12.5px;
+}
+.filterBtn.active{
+  background:var(--accent);border-color:var(--accent);color:#0a0e14;font-weight:600;
+}
+.filterBtn.active[data-filter="move"]{background:var(--move);border-color:var(--move);color:#08170e;}
+.filterBtn.active[data-filter="delete"]{background:var(--delete);border-color:var(--delete);color:#1a0708;}
+.filterBtn.active[data-filter="none"]{background:var(--bg-3);border-color:var(--text-1);color:var(--text-0);}
+.filterBtn.active[data-filter="hasKeywords"],
+.filterBtn.active[data-filter="noKeywords"]{background:var(--accent-dim);border-color:var(--accent);color:var(--text-0);}
+.filterBtnSep{width:1px;height:20px;background:var(--line);margin:0 4px;align-self:center;}
+#filterActiveIndicator{font-weight:600;}
+
+/* ---------- Statusleiste unten ---------- */
+#bottomBar{
+  display:flex;align-items:center;gap:16px;padding:8px 14px;
+  background:var(--bg-1);border-top:1px solid var(--line);font-size:12px;color:var(--text-1);
+}
+#bottomBar .count{display:flex;align-items:center;gap:5px;}
+#bottomBar .dot{width:9px;height:9px;border-radius:50%;display:inline-block;}
+#bottomBar .dot.move{background:var(--move);}
+#bottomBar .dot.delete{background:var(--delete);}
+#bottomBar .spacer{flex:1;}
+#bottomBar .hint{color:var(--text-2);}
+
+.shortcutToggleBtn{
+  padding:6px 10px;font-size:13px;
+}
+.shortcutToggleBtn.active{background:var(--accent);border-color:var(--accent);color:#0a0e14;}
+
+/* ---------- Dauerhafte, nach Funktion gruppierte Shortcut-Leiste ---------- */
+.shortcutBar{
+  display:flex;flex-wrap:wrap;gap:18px;
+  padding:9px 16px;
+  background:var(--bg-1);border-top:1px solid var(--line);
+  font-size:11.5px;flex-shrink:0;
+}
+.shortcutBar.hidden{display:none;}
+.shortcutGroup{display:flex;align-items:center;gap:8px;}
+.shortcutGroup .shortcutGroupLabel{
+  color:var(--text-2);text-transform:uppercase;letter-spacing:.04em;font-size:10px;font-weight:600;
+  margin-right:2px;
+}
+.shortcutEntry{display:flex;align-items:center;gap:4px;color:var(--text-1);white-space:nowrap;}
+.shortcutEntry kbd{
+  background:var(--bg-3);border:1px solid var(--line);border-radius:4px;padding:1px 6px;
+  font-size:10.5px;color:var(--text-0);font-family:inherit;line-height:1.5;
+}
+
+/* ---------- Modal-Grundgerüst ---------- */
+.modalOverlay{
+  position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;
+  align-items:center;justify-content:center;z-index:100;
+}
+.modalOverlay.hidden{display:none;}
+.modal{
+  background:var(--bg-1);border:1px solid var(--line);border-radius:10px;
+  padding:22px 24px;min-width:340px;max-width:560px;max-height:85vh;overflow-y:auto;
+  box-shadow:0 20px 60px rgba(0,0,0,.5);
+}
+.modal h2{margin:0 0 4px;font-size:16px;}
+.modal .subtitle{color:var(--text-2);font-size:12px;margin-bottom:16px;}
+.modal .field{margin-bottom:14px;}
+.modal .field label{display:block;margin-bottom:5px;}
+.modal .field input, .modal .field select{width:100%;}
+.modal .row{display:flex;gap:10px;}
+.modal .row > *{flex:1;}
+.modal .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;}
+.modal .actions .left{margin-right:auto;display:flex;gap:8px;}
+
+/* ---------- Rename-Format-Builder ---------- */
+.tokenRow{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;}
+.tokenChip{
+  background:var(--bg-3);border:1px solid var(--line);border-radius:5px;
+  padding:6px 10px;font-size:12px;cursor:grab;user-select:none;
+}
+.tokenChip:hover{border-color:var(--accent);}
+#formatBuilder{
+  min-height:44px;border:1px dashed var(--line);border-radius:var(--radius);
+  padding:8px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;background:var(--bg-2);
+}
+.formatToken{
+  display:flex;align-items:center;gap:6px;background:var(--accent-dim);border:1px solid var(--accent);
+  color:var(--text-0);border-radius:5px;padding:5px 8px;font-size:12px;
+}
+.formatToken button{
+  background:none;border:none;color:var(--text-1);padding:0;font-size:14px;line-height:1;
+}
+.formatToken button:hover{color:var(--delete);background:none;}
+#formatPreview{
+  margin-top:10px;font-size:12.5px;color:var(--text-1);
+  background:var(--bg-2);border-radius:var(--radius);padding:8px 10px;word-break:break-all;
+}
+#formatPreview b{color:var(--text-0);}
+
+/* ---------- Lightbox ---------- */
+#lightbox{
+  position:fixed;inset:0;background:#0a0c10;z-index:200;
+  display:flex;flex-direction:column;
+}
+#lightbox.hidden{display:none;}
+#lightboxTop{
+  display:flex;align-items:center;gap:10px;
+  padding:10px 16px;background:var(--bg-1);border-bottom:1px solid var(--line);
+}
+#lightboxTop .info{font-size:12.5px;color:var(--text-1);flex-shrink:0;}
+#lightboxTop .info b{color:var(--text-0);}
+#lightboxTop .sep-flex{flex:1;}
+#btnToggleLbPanel{margin-left:auto;}
+#btnToggleLbPanel.active{background:var(--accent);border-color:var(--accent);color:#0a0e14;}
+
+#lightboxMain{flex:1;display:flex;overflow:hidden;min-height:0;}
+#lightboxBody{
+  flex:1;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;
+}
+#lightboxImgWrap{max-width:92%;max-height:92%;display:flex;align-items:center;justify-content:center;}
+#lightboxImgWrap img{max-width:100%;max-height:85vh;object-fit:contain;border-radius:4px;}
+#lightboxImgWrap .noThumbLarge{color:var(--text-2);font-size:14px;}
+.lbNav{
+  position:absolute;top:50%;transform:translateY(-50%);background:rgba(30,33,40,.7);
+  border:1px solid var(--line);color:var(--text-0);width:44px;height:44px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;font-size:20px;cursor:pointer;
+}
+.lbNav:hover{background:rgba(50,54,64,.9);}
+#lbPrev{left:18px;}
+#lbNext{right:18px;}
+#lightboxKwOverlay{
+  position:absolute;left:20px;bottom:16px;right:20px;
+  display:flex;flex-wrap:wrap;gap:6px;pointer-events:none;
+}
+.lbOverlayChip{
+  background:rgba(20,22,28,.82);border:1px solid rgba(255,255,255,.18);color:#e8eaf0;
+  font-size:12px;padding:4px 10px;border-radius:12px;
+}
+
+/* ---------- EXIF-Info-Overlay (Leuchtkasten + Grid) ---------- */
+.exifOverlayPanel{
+  background:rgba(18,20,26,.72);
+  backdrop-filter:blur(14px) saturate(140%);
+  -webkit-backdrop-filter:blur(14px) saturate(140%);
+  border:1px solid rgba(255,255,255,.09);
+  border-radius:10px;
+  padding:16px 18px;
+  min-width:230px;
+  max-width:300px;
+  box-shadow:0 12px 40px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.04);
+  pointer-events:none;
+  animation:exifFadeIn .16s ease-out;
+}
+@keyframes exifFadeIn{
+  from{opacity:0;transform:translateY(-4px);}
+  to{opacity:1;transform:translateY(0);}
+}
+.exifOverlayPanel .exifTitle{
+  font-size:10.5px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;
+  color:rgba(255,255,255,.38);margin-bottom:11px;
+  padding-bottom:9px;border-bottom:1px solid rgba(255,255,255,.08);
+}
+.exifOverlayPanel .exifRow{
+  display:flex;justify-content:space-between;align-items:baseline;gap:14px;
+  padding:3.5px 0;font-size:12.5px;
+}
+.exifOverlayPanel .exifLabel{
+  color:rgba(255,255,255,.42);font-weight:400;white-space:nowrap;
+}
+.exifOverlayPanel .exifValue{
+  color:rgba(255,255,255,.92);font-weight:500;text-align:right;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-variant-numeric:tabular-nums;
+}
+.exifOverlayPanel .exifGroupGap{height:8px;}
+.exifOverlayPanel .exifEmpty{
+  color:rgba(255,255,255,.4);font-size:12px;font-style:italic;
+}
+
+/* Leuchtkasten: oben rechts über dem Bild, dezent schwebend */
+#lightboxExifOverlay{
+  position:absolute;top:16px;right:16px;z-index:5;
+}
+#lightboxExifOverlay.hidden{display:none;}
+
+/* Grid: fixed positioniert, JS setzt top/left dynamisch neben die Cursor-Zelle */
+#gridExifOverlay{
+  position:fixed;z-index:150;
+}
+#gridExifOverlay.hidden{display:none;}
+
+#btnToggleExifOverlay.active{background:var(--accent);border-color:var(--accent);color:#0a0e14;}
+#btnToggleLoupe.active{background:var(--accent);border-color:var(--accent);color:#0a0e14;}
+
+/* ---------- Lupe (Taste M) ---------- */
+#loupeLens{
+  position:fixed;z-index:20;
+  width:260px;height:260px;
+  border-radius:50%;
+  border:3px solid rgba(255,255,255,.85);
+  box-shadow:0 8px 32px rgba(0,0,0,.55), inset 0 0 0 1px rgba(0,0,0,.2);
+  pointer-events:none;
+  background-repeat:no-repeat;
+  background-color:#111;
+  transform:translate(-50%, -50%);
+}
+#loupeLens.hidden{display:none;}
+#lightboxBody.loupeActive #lightboxImgWrap img{cursor:none;}
+
+/* ---------- Quick Look: ganzes Foto, reine Vorschau ---------- */
+#quickLookOverlay{
+  position:fixed;inset:0;z-index:250;
+  background:rgba(6,7,10,.94);
+  display:flex;align-items:center;justify-content:center;
+  padding:40px;
+  animation:quickLookFadeIn .12s ease-out;
+}
+#quickLookOverlay.hidden{display:none;}
+@keyframes quickLookFadeIn{
+  from{opacity:0;}
+  to{opacity:1;}
+}
+#quickLookImgWrap{
+  max-width:100%;max-height:100%;
+  display:flex;align-items:center;justify-content:center;
+}
+#quickLookImgWrap img{
+  max-width:100%;max-height:calc(100vh - 80px);
+  object-fit:contain;
+  border-radius:4px;
+  box-shadow:0 24px 80px rgba(0,0,0,.6);
+}
+#quickLookImgWrap .noThumbLarge{color:var(--text-2);font-size:14px;}
+
+/* ---------- Ausblendbares Seitenpanel ---------- */
+#lightboxPanel{
+  width:290px;flex-shrink:0;background:var(--bg-1);border-left:1px solid var(--line);
+  padding:14px 16px;overflow-y:auto;display:flex;flex-direction:column;gap:16px;
+}
+#lightboxPanel.hidden{display:none;}
+.lbPanelSection .lbPanelTitle{
+  font-size:11px;color:var(--text-2);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px;
+}
+.lbPanelSection input{width:100%;}
+.lbAssignedChips{display:flex;flex-wrap:wrap;gap:6px;}
+.lbAssignedChip{
+  display:flex;align-items:center;gap:6px;background:var(--bg-3);border:1px solid var(--line);
+  border-radius:14px;padding:4px 6px 4px 11px;font-size:12.5px;
+}
+.lbAssignedChip button{background:none;border:none;padding:0;color:var(--text-1);font-size:14px;line-height:1;}
+.lbAssignedChip button:hover{background:none;color:var(--delete);}
+.lbAssignedEmpty{color:var(--text-2);font-size:12px;}
+#lightboxBottom{display:flex;gap:6px;flex-wrap:wrap;}
+.lbActionBtn{
+  display:flex;align-items:center;gap:6px;padding:7px 10px;border-radius:var(--radius);
+  border:1px solid var(--line);background:var(--bg-3);color:var(--text-0);font-size:12.5px;cursor:pointer;flex:1;
+  justify-content:center;
+}
+.lbActionBtn kbd{
+  background:var(--bg-1);border:1px solid var(--line);border-radius:4px;padding:1px 6px;font-size:11px;color:var(--text-1);
+}
+.lbActionBtn.active-move{background:var(--move-dim);border-color:var(--move);}
+.lbActionBtn.active-delete{background:var(--delete-dim);border-color:var(--delete);}
+#lightboxCurrentBadge{
+  font-size:11px;font-weight:700;padding:3px 10px;border-radius:5px;letter-spacing:.03em;flex-shrink:0;
+}
+#lightboxCurrentBadge.action-move{background:var(--move);color:#08170e;}
+#lightboxCurrentBadge.action-delete{background:var(--delete);color:#1a0708;}
+#lightboxCurrentBadge.action-none{background:var(--bg-3);color:var(--text-2);}
+
+/* ---------- Filmstreifen ---------- */
+#lightboxFilmstrip{
+  flex-shrink:0;display:flex;gap:6px;padding:8px 12px;overflow-x:auto;
+  background:var(--bg-1);border-top:1px solid var(--line);
+}
+.filmCell{
+  flex-shrink:0;width:64px;height:64px;border-radius:6px;overflow:hidden;cursor:pointer;
+  position:relative;border:2px solid transparent;background:var(--bg-3);
+}
+.filmCell img{width:100%;height:100%;object-fit:cover;display:block;}
+.filmCell.current{border-color:var(--focus-ring);}
+.filmCell .filmBadge{
+  position:absolute;top:2px;right:2px;font-size:8px;font-weight:700;padding:1px 4px;border-radius:3px;
+}
+.filmCell.action-move .filmBadge{background:var(--move);color:#08170e;}
+.filmCell.action-delete .filmBadge{background:var(--delete);color:#1a0708;}
+.filmCell .filmKwDot{
+  position:absolute;bottom:2px;right:3px;font-size:9px;text-shadow:0 1px 2px rgba(0,0,0,.8);
+}
+
+/* ---------- Toast ---------- */
+#toastHost{position:fixed;bottom:20px;right:20px;display:flex;flex-direction:column;gap:8px;z-index:300;}
+.toast{
+  background:var(--bg-2);border:1px solid var(--line);border-radius:var(--radius);
+  padding:10px 14px;font-size:13px;max-width:340px;box-shadow:0 8px 24px rgba(0,0,0,.4);
+}
+.toast.error{border-color:var(--delete);}
+.toast.success{border-color:var(--move);}
+
+/* ---------- Progress overlay ---------- */
+#progressOverlay{
+  position:fixed;inset:0;background:rgba(10,12,16,.85);z-index:400;
+  display:flex;align-items:center;justify-content:center;
+}
+#progressOverlay.hidden{display:none;}
+#progressBox{
+  background:var(--bg-1);border:1px solid var(--line);border-radius:10px;padding:26px 30px;
+  min-width:320px;text-align:center;
+}
+#progressBox .barTrack{
+  height:8px;background:var(--bg-3);border-radius:4px;margin:14px 0 8px;overflow:hidden;
+}
+#progressBox .barFill{height:100%;background:var(--accent);width:0%;transition:width .15s;}
+#progressBox .detail{font-size:12px;color:var(--text-2);}
+
+.hidden{display:none !important;}
+
+/* ============ STICHWORTKATALOG-DIALOG ============ */
+.modalLarge{
+  background:var(--bg-1);border:1px solid var(--line);border-radius:10px;
+  width:920px;max-width:94vw;height:640px;max-height:88vh;
+  box-shadow:0 20px 60px rgba(0,0,0,.5);
+  display:flex;flex-direction:column;overflow:hidden;
+}
+.catalogHeader{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:16px 20px 0;flex-shrink:0;
+}
+.catalogHeader h2{margin:0;font-size:16px;}
+.catalogTabs{
+  display:flex;gap:4px;padding:14px 20px 0;border-bottom:1px solid var(--line);flex-shrink:0;
+}
+.catalogTab{
+  background:none;border:none;border-bottom:2px solid transparent;
+  color:var(--text-1);padding:8px 4px;border-radius:0;font-size:13.5px;
+  margin-right:18px;
+}
+.catalogTab:hover{background:none;color:var(--text-0);}
+.catalogTab.active{color:var(--text-0);border-bottom-color:var(--accent);font-weight:600;}
+
+.catalogBody{
+  flex:1;display:flex;overflow:hidden;min-height:0;
+}
+.catalogPane{display:none;flex:1;overflow:hidden;}
+.catalogPane.active{display:flex;}
+
+.catalogListCol{
+  width:260px;flex-shrink:0;border-right:1px solid var(--line);
+  display:flex;flex-direction:column;overflow:hidden;
+}
+.catalogListHeader{
+  display:flex;gap:6px;padding:12px;border-bottom:1px solid var(--line);flex-shrink:0;
+}
+.catalogListHeader input{flex:1;min-width:0;}
+.catalogList{flex:1;overflow-y:auto;padding:6px;}
+.catalogListItem{
+  display:flex;align-items:center;justify-content:space-between;gap:6px;
+  padding:8px 10px;border-radius:6px;cursor:pointer;font-size:13px;margin-bottom:2px;
+}
+.catalogListItem:hover{background:var(--bg-2);}
+.catalogListItem.active{background:var(--accent-dim);border:1px solid var(--accent);}
+.catalogListItem .itemName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.catalogListItem .itemCount{color:var(--text-2);font-size:11px;flex-shrink:0;}
+.catalogListItem .itemActions{display:none;gap:4px;flex-shrink:0;}
+.catalogListItem:hover .itemActions{display:flex;}
+.iconBtn{
+  background:none;border:none;padding:2px 5px;font-size:13px;color:var(--text-1);border-radius:4px;
+}
+.iconBtn:hover{background:var(--bg-3);color:var(--text-0);}
+.iconBtn.danger:hover{color:var(--delete);}
+
+.catalogDetailCol{flex:1;display:flex;flex-direction:column;overflow:hidden;padding:16px 20px;}
+.catalogDetailEmpty{
+  color:var(--text-2);font-size:13px;margin:auto;text-align:center;
+}
+.catalogDetailHeader{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-shrink:0;}
+.catalogDetailHeader input{flex:1;font-size:15px;font-weight:600;padding:8px 10px;}
+.catalogKeywordAdd{display:flex;gap:6px;margin-bottom:12px;flex-shrink:0;}
+.catalogKeywordAdd input{flex:1;}
+.catalogKeywordList{flex:1;overflow-y:auto;display:flex;flex-wrap:wrap;gap:8px;align-content:flex-start;}
+.keywordChip{
+  display:flex;align-items:center;gap:8px;background:var(--bg-2);border:1px solid var(--line);
+  border-radius:16px;padding:6px 8px 6px 14px;font-size:13px;
+}
+.keywordChip input{
+  background:transparent;border:none;padding:0;font-size:13px;width:auto;min-width:20px;
+}
+.keywordChip .iconBtn{padding:1px 4px;}
+.catalogFootnote{color:var(--text-2);font-size:11.5px;margin-top:10px;flex-shrink:0;}
+
+/* ---------- Hilfe-Dialog (F1) ---------- */
+.helpChapterItem{
+  padding:8px 10px;border-radius:6px;cursor:pointer;font-size:13px;margin-bottom:2px;
+  color:var(--text-1);
+}
+.helpChapterItem:hover{background:var(--bg-2);color:var(--text-0);}
+.helpChapterItem.active{background:var(--accent-dim);border:1px solid var(--accent);color:var(--text-0);}
+#helpContent{padding:8px 24px 24px;line-height:1.65;font-size:13.5px;}
+#helpContent h3{font-size:17px;margin:0 0 14px;color:var(--text-0);}
+#helpContent h4{font-size:13.5px;margin:20px 0 8px;color:var(--text-1);text-transform:uppercase;letter-spacing:.03em;}
+#helpContent p{margin:0 0 12px;color:var(--text-1);}
+#helpContent ul{margin:0 0 12px;padding-left:20px;color:var(--text-1);}
+#helpContent li{margin-bottom:5px;}
+#helpContent kbd{
+  background:var(--bg-3);border:1px solid var(--line);border-radius:4px;padding:1px 7px;
+  font-size:12px;color:var(--text-0);font-family:inherit;
+}
+#helpContent table{width:100%;border-collapse:collapse;margin:0 0 16px;font-size:13px;}
+#helpContent th{text-align:left;color:var(--text-2);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.03em;padding:6px 10px;border-bottom:1px solid var(--line);}
+#helpContent td{padding:7px 10px;border-bottom:1px solid var(--bg-2);color:var(--text-1);}
+#helpContent mark{background:rgba(242,199,68,.35);color:var(--text-0);border-radius:2px;padding:0 1px;}
+.helpSearchEmpty{color:var(--text-2);font-size:12px;padding:8px 10px;}
+
+/* ---------- Favoriten-Tab ---------- */
+.favoritesGrid{
+  display:grid;grid-template-columns:repeat(3, 1fr);gap:14px;padding:20px;
+  overflow-y:auto;flex:1;
+}
+.favoriteSlot{
+  border:1px solid var(--line);border-radius:8px;padding:14px;background:var(--bg-2);
+  display:flex;flex-direction:column;gap:8px;min-height:110px;
+}
+.favoriteSlot .slotNumber{
+  font-size:11px;color:var(--text-2);font-weight:700;letter-spacing:.03em;
+}
+.favoriteSlot .slotLabel{
+  font-size:14px;font-weight:600;flex:1;word-break:break-word;
+}
+.favoriteSlot.empty .slotLabel{color:var(--text-2);font-weight:400;font-style:italic;}
+.favoriteSlot .slotActions{display:flex;gap:6px;}
+.favoriteSlot .slotActions button{flex:1;font-size:12px;padding:5px 8px;}
+
+.catalogFooter{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:14px 20px;border-top:1px solid var(--line);flex-shrink:0;
+}
+.catalogFooter .left{display:flex;gap:8px;}
+
+/* ---------- Kleiner Auswahl-Dialog (Favorit aus Katalog wählen) ---------- */
+.keywordPickerList{max-height:320px;overflow-y:auto;margin:10px 0;}
+.keywordPickerGroupTitle{
+  font-size:11.5px;color:var(--text-2);text-transform:uppercase;letter-spacing:.04em;
+  margin:12px 0 4px;
+}
+.keywordPickerItem{
+  padding:7px 10px;border-radius:6px;cursor:pointer;font-size:13px;
+}
+.keywordPickerItem:hover{background:var(--bg-2);}
+
+/* ---------- Stichwort-Zuweisungs-Panel (Taste T) ---------- */
+#keywordAssignModal{width:480px;max-width:92vw;}
+.assignSection{margin-bottom:16px;}
+.assignSectionTitle{
+  font-size:11.5px;color:var(--text-2);text-transform:uppercase;letter-spacing:.04em;
+  margin-bottom:8px;
+}
+.assignFavoritesRow{display:grid;grid-template-columns:repeat(3, 1fr);gap:6px;}
+.assignFavBtn{
+  display:flex;align-items:center;gap:6px;padding:7px 8px;font-size:12.5px;
+  justify-content:flex-start;text-align:left;
+}
+.assignFavBtn .favNum{
+  flex-shrink:0;width:18px;height:18px;border-radius:4px;background:var(--bg-1);
+  display:flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:700;color:var(--text-1);
+}
+.assignFavBtn .favLabel{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;}
+.assignFavBtn.assigned{background:var(--accent-dim);border-color:var(--accent);}
+.assignFavBtn.assigned .favNum{background:var(--accent);color:#0a0e14;}
+.assignFavBtn:disabled{opacity:.35;cursor:default;}
+
+.assignChipRow{display:flex;flex-wrap:wrap;gap:6px;}
+.assignContainerChip{
+  display:flex;align-items:center;gap:6px;padding:6px 10px;font-size:12.5px;border-radius:16px;
+}
+.assignContainerChip.assigned{background:var(--accent-dim);border-color:var(--accent);}
+.assignContainerChip .chipCount{color:var(--text-2);font-size:10.5px;}
+
+.assignKeywordResults{max-height:180px;overflow-y:auto;margin-top:8px;}
+.assignKeywordItem{
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:7px 10px;border-radius:6px;cursor:pointer;font-size:13px;
+}
+.assignKeywordItem:hover{background:var(--bg-2);}
+.assignKeywordItem.assigned{background:var(--accent-dim);}
+.assignKeywordItem .assignedMark{color:var(--accent);font-weight:700;font-size:12px;}
+.assignKeywordEmpty{color:var(--text-2);font-size:12px;padding:8px 10px;}
+</style>
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ============ TOOLBAR ============ -->
+  <div id="toolbar">
+    <div class="group">
+      <button id="btnOpenSource">📂 Quellverzeichnis öffnen</button>
+      <span class="path-value" id="sourcePathLabel">kein Ordner gewählt</span>
+    </div>
+    <div class="sep"></div>
+    <div class="group">
+      <button id="btnOpenTarget">🎯 Zielverzeichnis wählen</button>
+      <span class="path-value" id="targetPathLabel">kein Ordner gewählt</span>
+    </div>
+    <div class="sep"></div>
+    <div class="group">
+      <button id="btnRenameSettings">⚙️ Namensschema…</button>
+      <button id="btnKeywordCatalog">🏷️ Stichwortkatalog…</button>
+      <button id="btnAppSettings">🛠️ Einstellungen…</button>
+    </div>
+    <div class="sep"></div>
+    <div class="group" id="filterGroup" role="group" aria-label="Fotos filtern">
+      <button class="filterBtn active" data-filter="all" type="button">Alle</button>
+      <button class="filterBtn" data-filter="move" type="button">➜ Verschieben</button>
+      <button class="filterBtn" data-filter="delete" type="button">🗑 Löschen</button>
+      <button class="filterBtn" data-filter="none" type="button">Unmarkiert</button>
+      <span class="filterBtnSep"></span>
+      <button class="filterBtn" data-filter="hasKeywords" type="button">🏷️ Mit Stichworten</button>
+      <button class="filterBtn" data-filter="noKeywords" type="button">Ohne Stichworte</button>
+    </div>
+    <div class="sep"></div>
+    <div class="group" role="group" aria-label="Sortierung">
+      <label for="sortKeySelect" style="font-size:12px;color:var(--text-2);">Sortieren:</label>
+      <select id="sortKeySelect">
+        <option value="name">Dateiname</option>
+        <option value="fileDate">Dateidatum</option>
+        <option value="captureDate" selected>Aufnahmedatum</option>
+        <option value="fileSize">Dateigröße</option>
+      </select>
+      <button id="btnSortDirection" type="button">↑ Aufsteigend</button>
+    </div>
+    <div class="spacer"></div>
+    <span id="statusText"></span>
+    <div class="sep"></div>
+    <button id="btnRunActions" class="primary" disabled>Aktionen ausführen ▶</button>
+  </div>
+
+  <!-- ============ GRID ============ -->
+  <div id="gridWrap" tabindex="0">
+    <div id="emptyState">Noch kein Quellverzeichnis geöffnet.<br>Klicke oben auf „Quellverzeichnis öffnen“, um Fotos zu laden.</div>
+    <div id="grid"></div>
+    <div id="filterEmptyState" class="hidden">Keine Fotos passen zum aktuellen Filter.</div>
+  </div>
+  <div id="gridExifOverlay" class="hidden"></div>
+
+  <!-- ============ QUICK LOOK (Ganzes Foto, Leertaste bei Einzelauswahl) ============ -->
+  <div id="quickLookOverlay" class="hidden">
+    <div id="quickLookImgWrap"></div>
+  </div>
+
+  <!-- ============ SHORTCUT-LEISTE (Grid) ============ -->
+  <div id="gridShortcutBar" class="shortcutBar hidden"></div>
+
+  <!-- ============ BOTTOM STATUS BAR ============ -->
+  <div id="bottomBar">
+    <span class="count">📷 <span id="totalCount">0</span> Fotos</span>
+    <span class="count"><span class="dot move"></span> <span id="moveCount">0</span> zum Verschieben</span>
+    <span class="count"><span class="dot delete"></span> <span id="deleteCount">0</span> zum Löschen</span>
+    <span class="count">🏷️ <span id="keywordedCount">0</span> mit Stichworten</span>
+    <span class="count" id="multiSelectCount"></span>
+    <span class="count" id="filterActiveIndicator"></span>
+    <span class="spacer"></span>
+    <button id="btnToggleGridShortcuts" class="shortcutToggleBtn" title="Tastenkürzel anzeigen/ausblenden">⌨</button>
+    <button id="btnOpenHelp" class="shortcutToggleBtn" title="Hilfe (F1)">❔</button>
+  </div>
+
+</div>
+
+<!-- ============ LIGHTBOX ============ -->
+<div id="lightbox" class="hidden">
+  <div id="lightboxTop">
+    <div class="info"><b id="lbFilename">–</b> &nbsp; <span id="lbIndex"></span></div>
+    <div id="lightboxCurrentBadge" class="action-none">keine Aktion</div>
+    <button id="btnToggleExifOverlay" title="Bildinformationen (Taste I)">ⓘ Info</button>
+    <button id="btnToggleLoupe" title="Lupe (Taste M)">🔍 Lupe</button>
+    <button id="btnToggleLbPanel">🏷️ Panel</button>
+    <button id="btnToggleLbShortcuts" class="shortcutToggleBtn" title="Tastenkürzel anzeigen/ausblenden">⌨</button>
+    <button id="btnCloseLightbox">✕ Schließen (Esc)</button>
+  </div>
+  <div id="lightboxMain">
+    <div id="lightboxBody">
+      <button class="lbNav" id="lbPrev">‹</button>
+      <div id="lightboxImgWrap"></div>
+      <button class="lbNav" id="lbNext">›</button>
+      <div id="lightboxKwOverlay"></div>
+      <div id="lightboxExifOverlay" class="hidden"></div>
+      <div id="loupeLens" class="hidden"></div>
+    </div>
+    <div id="lightboxPanel">
+      <div class="lbPanelSection">
+        <div class="lbPanelTitle">Zugewiesene Stichworte</div>
+        <div id="lbAssignedChips" class="lbAssignedChips"></div>
+      </div>
+      <div class="lbPanelSection">
+        <div class="lbPanelTitle">Favoriten (Taste 1–9)</div>
+        <div id="lbFavoritesRow" class="assignFavoritesRow"></div>
+      </div>
+      <div class="lbPanelSection">
+        <div class="lbPanelTitle">Gruppen</div>
+        <div id="lbGroupsRow" class="assignChipRow"></div>
+      </div>
+      <div class="lbPanelSection">
+        <div class="lbPanelTitle">Sets</div>
+        <div id="lbSetsRow" class="assignChipRow"></div>
+      </div>
+      <div class="lbPanelSection">
+        <div class="lbPanelTitle">Stichwort suchen</div>
+        <input type="text" id="lbKeywordSearch" placeholder="Suchen oder neu eingeben…">
+        <div id="lbKeywordResults" class="assignKeywordResults"></div>
+      </div>
+      <div class="lbPanelSection">
+        <div class="lbPanelTitle">Aktion</div>
+        <div id="lightboxBottom">
+          <button class="lbActionBtn" id="lbMoveBtn"><span>➜ Verschieben</span><kbd>V</kbd></button>
+          <button class="lbActionBtn" id="lbDeleteBtn"><span>🗑 Löschen</span><kbd>L</kbd></button>
+          <button class="lbActionBtn" id="lbClearBtn"><span>Aufheben</span><kbd>X</kbd></button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="lightboxShortcutBar" class="shortcutBar hidden"></div>
+  <div id="lightboxFilmstrip"></div>
+</div>
+
+<!-- ============ MODAL: Namensschema-Einstellungen ============ -->
+<div class="modalOverlay hidden" id="renameModalOverlay">
+  <div class="modal">
+    <h2>Namensschema für verschobene Dateien</h2>
+    <div class="subtitle">Ziehe Bausteine in das Schema-Feld, um den Dateinamen zusammenzusetzen.</div>
+
+    <div class="tokenRow">
+      <div class="tokenChip" draggable="true" data-token="date">📅 Datum (JJJJMMTT)</div>
+      <div class="tokenChip" draggable="true" data-token="event">📝 Ereignistext</div>
+      <div class="tokenChip" draggable="true" data-token="counter">🔢 Zähler</div>
+      <div class="tokenChip" draggable="true" data-token="text">✏️ Freitext</div>
+      <div class="tokenChip" draggable="true" data-token="sep_underscore">_ Trenner</div>
+      <div class="tokenChip" draggable="true" data-token="sep_dash">- Trenner</div>
+    </div>
+
+    <div id="formatBuilder"></div>
+
+    <div class="field" style="margin-top:14px;">
+      <label>Zähler-Startwert / Stellen</label>
+      <div class="row">
+        <input type="number" id="counterStart" value="1" min="0">
+        <input type="number" id="counterDigits" value="3" min="1" max="6">
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Freitext (falls Baustein "Freitext" verwendet wird)</label>
+      <input type="text" id="freeText" placeholder="z. B. Urlaub">
+    </div>
+
+    <div id="formatPreview"></div>
+
+    <hr>
+
+    <div class="field">
+      <label>Voreinstellung</label>
+      <div class="row">
+        <select id="presetSelect"><option value="">– Voreinstellung wählen –</option></select>
+        <button id="btnSavePreset">💾 Als Voreinstellung speichern</button>
+        <button id="btnDeletePreset">🗑 Löschen</button>
+      </div>
+    </div>
+
+    <div class="actions">
+      <div class="left">
+        <button id="btnRenameCancel">Abbrechen</button>
+      </div>
+      <button id="btnRenameSave" class="primary">Übernehmen</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL: App-Einstellungen (Export/Import) ============ -->
+<div class="modalOverlay hidden" id="appSettingsOverlay">
+  <div class="modal">
+    <h2>Programmeinstellungen</h2>
+    <div class="subtitle">Sicherung aller gespeicherten Voreinstellungen (Namensschemata).</div>
+    <div class="field">
+      <button id="btnExportSettings">⬇ Einstellungen exportieren (.json)</button>
+    </div>
+    <div class="field">
+      <button id="btnImportSettings">⬆ Einstellungen importieren (.json)</button>
+      <input type="file" id="importSettingsFile" accept=".json" class="hidden">
+    </div>
+    <div class="actions">
+      <button id="btnAppSettingsClose" class="primary">Schließen</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL: Stichwortkatalog ============ -->
+<div class="modalOverlay hidden" id="keywordCatalogOverlay">
+  <div class="modalLarge">
+    <div class="catalogHeader">
+      <h2>🏷️ Stichwortkatalog</h2>
+      <button id="btnCloseKeywordCatalog">✕ Schließen</button>
+    </div>
+    <div class="catalogTabs">
+      <button class="catalogTab active" data-catalog-tab="groups" type="button">Gruppen</button>
+      <button class="catalogTab" data-catalog-tab="sets" type="button">Sets</button>
+      <button class="catalogTab" data-catalog-tab="favorites" type="button">⭐ Favoriten</button>
+    </div>
+
+    <div class="catalogBody">
+      <!-- ---- Tab: Gruppen ---- -->
+      <div class="catalogPane active" data-catalog-pane="groups">
+        <div class="catalogListCol">
+          <div class="catalogListHeader">
+            <input type="text" id="newGroupInput" placeholder="Neue Gruppe…">
+            <button id="btnAddGroup" class="primary">+</button>
+          </div>
+          <div class="catalogList" id="groupList"></div>
+        </div>
+        <div class="catalogDetailCol" id="groupDetailCol">
+          <div class="catalogDetailEmpty">Wähle links eine Gruppe aus oder lege eine neue an.</div>
+        </div>
+      </div>
+
+      <!-- ---- Tab: Sets ---- -->
+      <div class="catalogPane" data-catalog-pane="sets">
+        <div class="catalogListCol">
+          <div class="catalogListHeader">
+            <input type="text" id="newSetInput" placeholder="Neues Set…">
+            <button id="btnAddSet" class="primary">+</button>
+          </div>
+          <div class="catalogList" id="setList"></div>
+        </div>
+        <div class="catalogDetailCol" id="setDetailCol">
+          <div class="catalogDetailEmpty">Wähle links ein Set aus oder lege eines neu an.</div>
+        </div>
+      </div>
+
+      <!-- ---- Tab: Favoriten ---- -->
+      <div class="catalogPane" data-catalog-pane="favorites">
+        <div class="favoritesGrid" id="favoritesGrid"></div>
+      </div>
+    </div>
+
+    <div class="catalogFooter">
+      <div class="left">
+        <button id="btnExportCatalog">⬇ Katalog exportieren</button>
+        <button id="btnImportCatalog">⬆ Katalog importieren</button>
+        <input type="file" id="importCatalogFile" accept=".json" class="hidden">
+      </div>
+      <button id="btnCloseKeywordCatalog2" class="primary">Fertig</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL: Hilfe (F1) ============ -->
+<div class="modalOverlay hidden" id="helpOverlay">
+  <div class="modalLarge" id="helpModal">
+    <div class="catalogHeader">
+      <h2>❔ Hilfe</h2>
+      <button id="btnCloseHelp">✕ Schließen (Esc)</button>
+    </div>
+    <div style="padding:12px 20px 0;flex-shrink:0;">
+      <input type="text" id="helpSearchInput" placeholder="Hilfe durchsuchen…" style="width:100%;">
+    </div>
+    <div class="catalogBody" style="margin-top:12px;">
+      <div class="catalogListCol" id="helpChapterList"></div>
+      <div class="catalogDetailCol" id="helpContent" style="overflow-y:auto;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL: Stichworte zuweisen (Panel, Taste T) ============ -->
+<div class="modalOverlay hidden" id="keywordAssignOverlay">
+  <div class="modal" id="keywordAssignModal">
+    <h2>🏷️ Stichworte zuweisen</h2>
+    <div class="subtitle" id="keywordAssignTargetInfo"></div>
+
+    <div class="assignSection">
+      <div class="assignSectionTitle">Favoriten (Taste 1–9)</div>
+      <div class="assignFavoritesRow" id="assignFavoritesRow"></div>
+    </div>
+
+    <div class="assignSection">
+      <div class="assignSectionTitle">Gruppen</div>
+      <div class="assignChipRow" id="assignGroupsRow"></div>
+    </div>
+
+    <div class="assignSection">
+      <div class="assignSectionTitle">Sets</div>
+      <div class="assignChipRow" id="assignSetsRow"></div>
+    </div>
+
+    <div class="assignSection">
+      <div class="assignSectionTitle">Einzelnes Stichwort</div>
+      <div class="field">
+        <input type="text" id="assignKeywordSearch" placeholder="Stichwort suchen oder neu eingeben…">
+      </div>
+      <div class="assignKeywordResults" id="assignKeywordResults"></div>
+    </div>
+
+    <div class="actions">
+      <button id="btnKeywordAssignClose" class="primary">Fertig</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL: Stichwort aus Katalog wählen (für Favoriten) ============ -->
+<div class="modalOverlay hidden" id="keywordPickerOverlay">
+  <div class="modal">
+    <h2>Stichwort auswählen</h2>
+    <div class="subtitle">Wähle ein bestehendes Stichwort aus dem Katalog für diesen Favoriten-Slot.</div>
+    <div class="field">
+      <input type="text" id="keywordPickerSearch" placeholder="Suchen…">
+    </div>
+    <div class="keywordPickerList" id="keywordPickerList"></div>
+    <div class="actions">
+      <button id="btnKeywordPickerCancel">Abbrechen</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL: Ereignistext vor dem Verschieben ============ -->
+<div class="modalOverlay hidden" id="eventModalOverlay">
+  <div class="modal">
+    <h2>Ereignis / Bildinhalt</h2>
+    <div class="subtitle">Wird für alle zum Verschieben markierten Fotos in diesem Durchgang verwendet: im Dateinamen (Leerzeichen werden dort zu Unterstrichen) sowie unverändert als Beschreibung in den IPTC/XMP-Metadaten der Datei.</div>
+    <div class="field">
+      <label>Welches Ereignis oder Bildinhalt wird beschrieben?</label>
+      <input type="text" id="eventTextInput" placeholder="z. B. Geburtstag Oma, Wanderung Alpen …">
+    </div>
+    <div id="eventPreview" class="modal .subtitle" style="font-size:12px;color:var(--text-2);"></div>
+    <div class="actions">
+      <button id="btnEventCancel">Abbrechen</button>
+      <button id="btnEventOk" class="primary">OK – Aktionen ausführen</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ Progress Overlay ============ -->
+<div id="progressOverlay" class="hidden">
+
+  <div id="progressBox">
+    <div id="progressTitle">Verarbeite Dateien…</div>
+    <div class="barTrack"><div class="barFill" id="progressBarFill"></div></div>
+    <div class="detail" id="progressDetail">0 / 0</div>
+  </div>
+</div>
+
+<div id="toastHost"></div>
+
+<script src="exif.js"></script>
+<script src="exif-extended.js"></script>
+<script src="iptc-iim.js"></script>
+<script src="photoshop-irb.js"></script>
+<script src="xmp-packet.js"></script>
+<script src="jpeg-segments.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
