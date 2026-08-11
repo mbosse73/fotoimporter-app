@@ -62,6 +62,10 @@ Diese Tasten wirken auf das aktuell angesteuerte Foto oder, falls eine Mehrfacha
 
 Der Button „**Aktionen ausführen ▶**“ oben rechts führt alle gesetzten Aktionen aus. Ist mindestens ein Foto zum Verschieben markiert, fragt das Programm zuvor nach einer Ereignisbeschreibung (siehe [Namensschema](#namensschema-beim-verschieben)).
 
+Ist mindestens ein Foto zum **Löschen** markiert, erscheint zusätzlich eine Sicherheitsabfrage mit der Anzahl der betroffenen Fotos. Gelöschte Dateien landen **nicht im Papierkorb** und lassen sich nicht wiederherstellen.
+
+Die Tastenkürzel wirken nur als einzelne Tasten. `Strg`/`Cmd` in Kombination (z. B. `Strg`+`V` zum Einfügen) bleibt dem Browser überlassen und löst keine Aktion im Programm aus – einzige Ausnahme ist `Strg`/`Cmd`+`A` für „alles auswählen“.
+
 ## Sortierung und Filterung
 
 **Sortierung** (Toolbar): Dropdown mit vier Kriterien – Dateiname (natürliche Sortierung, d. h. `IMG_2` vor `IMG_10`), Dateidatum, Aufnahmedatum (EXIF mit Fallback auf Dateidatum) und Dateigröße. Der Button daneben kehrt die Richtung um (↑/↓). Der Cursor bleibt beim Umsortieren auf demselben Foto, nicht auf derselben Position.
@@ -137,7 +141,7 @@ Nur im Leuchttisch: Taste `M` blendet eine runde Lupe ein, die dem Mauszeiger fo
 Über „⚙️ Namensschema…“ lässt sich der Ziel-Dateiname aus Bausteinen zusammensetzen, per Drag & Drop in beliebiger Reihenfolge:
 
 - **Datum** (JJJJMMTT, Aufnahmedatum)
-- **Ereignis** (die beim Verschieben abgefragte Beschreibung, Leerzeichen werden zu Unterstrichen)
+- **Ereignis** (die beim Verschieben abgefragte Beschreibung, Leerzeichen werden zu Unterstrichen, in Dateinamen unzulässige Zeichen wie `/ \ : * ? " < > |` zu Bindestrichen)
 - **Zähler** (Startwert und Stellenzahl einstellbar)
 - **Freitext** (fest hinterlegter Text)
 - **Trenner** (Unterstrich oder Bindestrich)
@@ -157,11 +161,14 @@ Schlägt das direkte Schreiben in eine JPEG-Datei aus irgendeinem Grund fehl ode
 
 ## Sicherheit beim Verschieben
 
+Es wird **nie eine vorhandene Datei im Zielverzeichnis überschrieben**. Vor dem Schreiben prüft das Programm, ob der geplante Name dort (oder als zugehörige `.xmp`-Datei) bereits vergeben ist, und weicht andernfalls auf `name_1`, `name_2` usw. aus. Das gilt auch über mehrere Durchgänge und Programmstarts hinweg.
+
 Nach dem Schreiben der Zieldatei prüft das Programm aktiv, **bevor** die Quelldatei gelöscht wird:
 
 1. **Größe** der neu geschriebenen Zieldatei
 2. **Prüfsumme der Bilddaten** (SHA-256) – bei JPEG wird nur der garantiert unveränderte Bildanteil verglichen, bei anderen Formaten die komplette Datei
-3. **Metadaten** (Stichworte/Beschreibung), sofern welche geschrieben wurden
+3. **Metadaten** (Stichworte/Beschreibung), sofern sie in die Datei eingebettet wurden
+4. **XMP-Sidecar-Datei**, sofern eine geschrieben wurde – sie wird ebenfalls zurückgelesen und verglichen, denn für Formate ohne Direkteinbettung ist sie die einzige Ablage der Metadaten
 
 Schlägt eine dieser Prüfungen fehl, wird die Quelldatei **nicht gelöscht**, das Foto bleibt im Grid sichtbar (mit zurückgesetzter Aktion), und eine Meldung weist auf die betroffene Datei hin. Die möglicherweise unvollständige Zieldatei wird bewusst nicht automatisch entfernt, damit sie manuell geprüft werden kann.
 

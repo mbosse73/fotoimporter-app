@@ -20,12 +20,21 @@ function readExifDate(buffer) {
 
     while (offset < length) {
       const marker = view.getUint16(offset);
-      if (marker === 0xffe1) { // APP1 = EXIF-Segment
-        return parseExifSegment(view, offset + 4);
-      }
       if ((marker & 0xff00) !== 0xff00) break; // kein gültiger Marker mehr
       if (marker === 0xffda) break; // Start of Scan -> Bilddaten, EXIF wäre vorher gekommen
+
       const segmentLength = view.getUint16(offset + 2);
+      if (segmentLength < 2) break; // ungültige Länge - würde sonst zur Endlosschleife führen
+
+      if (marker === 0xffe1) {
+        // APP1 kann EXIF ODER XMP sein. Steht das XMP-Paket VOR dem EXIF-Segment
+        // (zulässig und bei manchen Werkzeugen üblich), darf hier nicht aufgegeben
+        // werden - sonst gilt das Foto als "ohne Aufnahmedatum" und bekommt
+        // stillschweigend das Dateidatum, was auch in den erzeugten Dateinamen
+        // einfließt. Also: nur bei einem echten Treffer zurückkehren, sonst weitersuchen.
+        const date = parseExifSegment(view, offset + 4);
+        if (date) return date;
+      }
       offset += 2 + segmentLength;
     }
     return null;
@@ -35,8 +44,11 @@ function readExifDate(buffer) {
 }
 
 function parseExifSegment(view, start) {
-  // "Exif\0\0" Header prüfen
+  // Vollständigen "Exif\0\0"-Header prüfen (inkl. der zwei Nullbytes, sonst würde
+  // z.B. ein APP1 mit anderem Präfix, das zufällig mit "Exif" beginnt, durchgehen).
+  if (start + 6 > view.byteLength) return null;
   if (view.getUint32(start) !== 0x45786966) return null;
+  if (view.getUint8(start + 4) !== 0x00 || view.getUint8(start + 5) !== 0x00) return null;
   const tiffStart = start + 6;
   const littleEndian = view.getUint16(tiffStart) === 0x4949;
 

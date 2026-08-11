@@ -1,7 +1,13 @@
 # Analyse: Foto-Importer
 
-Ergebnis eines Repo-Onboardings vom 11.08.2026 auf Commit `3128f35`. Rein
-analytisch – am Code wurde für dieses Dokument nichts geändert.
+Ergebnis eines Repo-Onboardings vom 11.08.2026 auf Commit `3128f35`.
+
+> **Behebungsstand:** Die Befunde in Abschnitt 2 sind inzwischen behoben – die
+> Beschreibungen bleiben als Begründung der jeweiligen Lösung stehen und
+> beschreiben den Zustand VOR der Korrektur. Was jeweils geändert wurde, steht
+> unter [Behebungsstand](#4-behebungsstand) am Ende des Dokuments. Die
+> Vorschläge in Abschnitt 3 sind teils umgesetzt, teils offen; die Tabellen sind
+> entsprechend markiert.
 
 ---
 
@@ -404,37 +410,105 @@ Aufwand und Nutzen jeweils niedrig / mittel / hoch.
 
 ### Code und Architektur
 
-| # | Vorschlag | Aufwand | Nutzen |
-|---|---|---|---|
-| V1 | **K1–K3 beheben** (Überschreibschutz, Fallback-Prüfung, Dateinamen-Bereinigung). Alle drei betreffen den Kernablauf; K1 kann Fotos vernichten. | niedrig | **hoch** |
-| V2 | **Test-Setup für die Binärformat-Module.** Die sechs Module sind DOM-frei und exportieren bereits per `module.exports` – ein `node --test`-Lauf ohne jede Dependency ist realistisch. Round-Trip-Tests (schreiben → zurücklesen), Grenzfälle bei Kürzung, JPEG ohne APP13, JPEG mit vorhandenem IPTC. Das ist der Teil der App, wo ein Fehler Bilddaten beschädigt, und der Teil, der sich am billigsten absichern lässt. | niedrig | **hoch** |
-| V3 | **`escapeHtml()` um Anführungszeichen erweitern** und den Einstellungs-Import validieren (M1). Einzeiler plus Prüfschleife. | niedrig | mittel |
-| V4 | **Modifikatortasten in den Tastaturhandlern prüfen** (M2). | niedrig | mittel |
-| V5 | **`app.js` aufteilen.** Naheliegende Schnitte entlang der bestehenden Banner: `state.js`, `grid.js`, `lightbox.js`, `keywords.js`, `execute.js`, `help.js`. Ohne Build-Schritt bleibt es bei zusätzlichen `<script>`-Tags – der globale Scope wird dabei nicht schlechter, als er heute schon ist. Erst nach V2 angehen, damit die Umbauten abgesichert sind. | mittel | mittel |
-| V6 | **LRU-Fenster für Großvorschauen** (M6). | niedrig | mittel |
-| V7 | **Toten Code entfernen** (G1, G2, G11) und die irreführenden Namen korrigieren (G3). | niedrig | niedrig |
-| V8 | **Ergebnisverfolgung pro Eintrag statt String-Matching** (M7). | niedrig | niedrig |
-| V9 | **Hilfe aus einer Quelle erzeugen** (G12) – `HELP_CHAPTERS` beim Bauen aus `HANDBUCH.md` ableiten oder umgekehrt. Ohne Build-Schritt am ehesten als kleines Node-Skript, das man bei Bedarf aufruft. | mittel | niedrig |
+| # | Vorschlag | Aufwand | Nutzen | Stand |
+|---|---|---|---|---|
+| V1 | **K1–K3 beheben** (Überschreibschutz, Fallback-Prüfung, Dateinamen-Bereinigung). Alle drei betreffen den Kernablauf; K1 kann Fotos vernichten. | niedrig | **hoch** | ✅ umgesetzt |
+| V2 | **Test-Setup für die Binärformat-Module.** Die sechs Module sind DOM-frei und exportieren bereits per `module.exports` – ein `node --test`-Lauf ohne jede Dependency ist realistisch. Round-Trip-Tests (schreiben → zurücklesen), Grenzfälle bei Kürzung, JPEG ohne APP13, JPEG mit vorhandenem IPTC. Das ist der Teil der App, wo ein Fehler Bilddaten beschädigt, und der Teil, der sich am billigsten absichern lässt. | niedrig | **hoch** | offen |
+| V3 | **`escapeHtml()` um Anführungszeichen erweitern** und den Einstellungs-Import validieren (M1). Einzeiler plus Prüfschleife. | niedrig | mittel | ✅ umgesetzt |
+| V4 | **Modifikatortasten in den Tastaturhandlern prüfen** (M2). | niedrig | mittel | ✅ umgesetzt |
+| V5 | **`app.js` aufteilen.** Naheliegende Schnitte entlang der bestehenden Banner: `state.js`, `grid.js`, `lightbox.js`, `keywords.js`, `execute.js`, `help.js`. Ohne Build-Schritt bleibt es bei zusätzlichen `<script>`-Tags – der globale Scope wird dabei nicht schlechter, als er heute schon ist. Erst nach V2 angehen, damit die Umbauten abgesichert sind. | mittel | mittel | offen |
+| V6 | **LRU-Fenster für Großvorschauen** (M6). | niedrig | mittel | ✅ umgesetzt |
+| V7 | **Toten Code entfernen** (G1, G2, G11) und die irreführenden Namen korrigieren (G3). | niedrig | niedrig | ✅ umgesetzt |
+| V8 | **Ergebnisverfolgung pro Eintrag statt String-Matching** (M7). | niedrig | niedrig | ✅ umgesetzt |
+| V9 | **Hilfe aus einer Quelle erzeugen** (G12) – `HELP_CHAPTERS` beim Bauen aus `HANDBUCH.md` ableiten oder umgekehrt. Ohne Build-Schritt am ehesten als kleines Node-Skript, das man bei Bedarf aufruft. | mittel | niedrig | offen |
 
 ### Funktionserweiterungen
 
-| # | Vorschlag | Aufwand | Nutzen |
-|---|---|---|---|
-| F1 | **Rückfrage vor dem Löschen** (M5) – mit Anzahl und dem Hinweis, dass kein Papierkorb beteiligt ist. | niedrig | **hoch** |
-| F2 | **Trockenlauf / Vorschau des Durchgangs.** Vor dem Start eine Liste zeigen: „diese 47 Dateien werden zu diesen Namen; diese 12 werden gelöscht", inklusive Warnung bei Namenskonflikten im Zielverzeichnis. Adressiert K1 aus Nutzersicht und macht den unumkehrbaren Schritt überprüfbar. | mittel | **hoch** |
-| F3 | **Verschieben in Unterordner nach Datum** (`2026/2026-08/`), optional als weiterer Baustein im Namensschema. Der häufigste nächste Wunsch bei genau diesem Werkzeugtyp; `getDirectoryHandle(name, {create:true})` gibt es her. | mittel | **hoch** |
-| F4 | **Zustand über Reload retten.** Markierungen und zugewiesene Stichworte gehen aktuell bei jedem Reload verloren. Verzeichnis-Handles lassen sich in IndexedDB persistieren und mit `queryPermission()` reaktivieren – eine unterbrochene Sichtung von 800 Fotos wäre damit fortsetzbar. | mittel | **hoch** |
-| F5 | **Rückgängig-Protokoll für den letzten Durchgang.** Verschobene Dateien lassen sich zurückbewegen; für gelöschte geht es nicht – aber schon eine Protokolldatei im Zielverzeichnis („was wurde wohin, was wurde gelöscht") wäre ein Sicherheitsnetz. | mittel | mittel |
-| F6 | **Unterordner der Quelle einbeziehen** (heute bewusst nur die oberste Ebene), optional per Schalter. | niedrig | mittel |
-| F7 | **RAW-Vorschau aus eingebettetem JPEG.** RAW-Dateien zeigen heute nur einen grauen Kasten. Die meisten RAW-Formate enthalten ein JPEG-Vorschaubild, das sich mit derselben Segment-Logik herausziehen ließe, die bereits existiert. | hoch | mittel |
-| F8 | **Stichwort-Vorschläge aus vorhandenen Metadaten** – beim Einlesen bereits vorhandene IPTC/XMP-Stichworte anzeigen und übernehmbar machen. Der Lesecode dafür ist vollständig vorhanden. | mittel | mittel |
-| F9 | **Favicon ergänzen** (G10). | niedrig | niedrig |
+| # | Vorschlag | Aufwand | Nutzen | Stand |
+|---|---|---|---|---|
+| F1 | **Rückfrage vor dem Löschen** (M5) – mit Anzahl und dem Hinweis, dass kein Papierkorb beteiligt ist. | niedrig | **hoch** | ✅ umgesetzt |
+| F2 | **Trockenlauf / Vorschau des Durchgangs.** Vor dem Start eine Liste zeigen: „diese 47 Dateien werden zu diesen Namen; diese 12 werden gelöscht", inklusive Warnung bei Namenskonflikten im Zielverzeichnis. Macht den unumkehrbaren Schritt überprüfbar. | mittel | **hoch** | offen |
+| F3 | **Verschieben in Unterordner nach Datum** (`2026/2026-08/`), optional als weiterer Baustein im Namensschema. Der häufigste nächste Wunsch bei genau diesem Werkzeugtyp; `getDirectoryHandle(name, {create:true})` gibt es her. | mittel | **hoch** | offen |
+| F4 | **Zustand über Reload retten.** Markierungen und zugewiesene Stichworte gehen aktuell bei jedem Reload verloren. Verzeichnis-Handles lassen sich in IndexedDB persistieren und mit `queryPermission()` reaktivieren – eine unterbrochene Sichtung von 800 Fotos wäre damit fortsetzbar. | mittel | **hoch** | offen |
+| F5 | **Rückgängig-Protokoll für den letzten Durchgang.** Verschobene Dateien lassen sich zurückbewegen; für gelöschte geht es nicht – aber schon eine Protokolldatei im Zielverzeichnis („was wurde wohin, was wurde gelöscht") wäre ein Sicherheitsnetz. | mittel | mittel | offen |
+| F6 | **Unterordner der Quelle einbeziehen** (heute bewusst nur die oberste Ebene), optional per Schalter. | niedrig | mittel | offen |
+| F7 | **RAW-Vorschau aus eingebettetem JPEG.** RAW-Dateien zeigen heute nur einen grauen Kasten. Die meisten RAW-Formate enthalten ein JPEG-Vorschaubild, das sich mit derselben Segment-Logik herausziehen ließe, die bereits existiert. | hoch | mittel | offen |
+| F8 | **Stichwort-Vorschläge aus vorhandenen Metadaten** – beim Einlesen bereits vorhandene IPTC/XMP-Stichworte anzeigen und übernehmbar machen. Der Lesecode dafür ist vollständig vorhanden. | mittel | mittel | offen |
+| F9 | **Favicon ergänzen** (G10). | niedrig | niedrig | ✅ umgesetzt |
 
-### Empfohlene Reihenfolge
+### Empfohlene weitere Reihenfolge
 
-1. **V1 + F1** – die Datenverlust-Pfade zuerst.
-2. **V2** – Testnetz, bevor größer umgebaut wird.
-3. **V3, V4, V6, V8** – kleine, klar abgegrenzte Korrekturen.
-4. **F2** – macht den unumkehrbaren Schritt für den Nutzer überprüfbar.
-5. **V5** – Aufteilung erst auf abgesichertem Stand.
-6. Alles Weitere nach Bedarf.
+Die Datenverlust-Pfade (V1, F1) sind erledigt. Sinnvoll als Nächstes:
+
+1. **V2** – Testnetz, bevor größer umgebaut wird. Die Korrekturen unten wurden
+   bereits gegen eine Attrappen-Version des Dateisystems geprüft; diese Prüfung
+   liegt aber nicht im Repository und läuft nicht automatisch mit.
+2. **F2** – Trockenlauf: macht den unumkehrbaren Schritt für den Nutzer
+   überprüfbar, statt ihn nur technisch abzusichern.
+3. **V5** – Aufteilung von `app.js` erst auf abgesichertem Stand.
+4. Alles Weitere nach Bedarf.
+
+---
+
+## 4. Behebungsstand
+
+Alle Befunde aus Abschnitt 2 sind behoben. Was jeweils geändert wurde:
+
+### Kritisch
+
+| ID | Änderung |
+|---|---|
+| K1 | `ensureUniqueName()` ist jetzt `async`, bekommt das Ziel-Handle und prüft über `targetFileExists()` das **Dateisystem** – zusätzlich für den zugehörigen `.xmp`-Namen, damit sich zwei Fotos mit gleichem Basisnamen nicht gegenseitig die Sidecar-Datei überschreiben. `usedTargetNames` wird zu Beginn jedes Durchgangs geleert. |
+| K2 | Neues Flag `metadataEmbedded` in `executeActions()`. `verifyMovedFile()` bekommt die erwarteten Metadaten nur, wenn tatsächlich eingebettet wurde – beim Sidecar-Fallback `null`. Damit läuft der Fallback-Pfad durch, statt zwangsläufig abzubrechen. |
+| K3 | `sanitizeEventText()` ersetzt unzulässige Zeichen; neu hinzugekommen ist `sanitizeFileBaseName()` als letzte Instanz für den fertigen Namen (führende/abschließende Punkte, Längenbegrenzung, reservierte Windows-Gerätenamen). `buildFilename()` gibt das Ergebnis dadurch. |
+
+### Mittel
+
+| ID | Änderung |
+|---|---|
+| M1 | `escapeHtml()` maskiert jetzt auch `"` und `'` und ist damit für Attributwerte sicher. Zusätzlich prüfen `normalizeKeywordCatalog()` und das neue `normalizePresets()` importierte Einstellungen auf die erwartete Form und verwerfen alles Übrige – inklusive Verweisen auf nicht vorhandene Stichworte. |
+| M2 | Beide Keydown-Handler (Grid und Leuchttisch) steigen bei `ctrlKey`/`metaKey`/`altKey` aus; Strg/Cmd+A wird separat davor behandelt. |
+| M3 | `verifyWrittenJpegKeywords()` vergleicht IPTC gegen die auf `MAX_KEYWORD_BYTES` gekürzten Erwartungswerte und XMP gegen die ungekürzten. |
+| M4 | `readExifDate()` sucht nach einem APP1 ohne EXIF-Präambel weiter, statt aufzugeben. `parseExifSegment()` prüft den vollständigen `"Exif\0\0"`-Header; eine Längenprüfung verhindert eine Endlosschleife bei beschädigten Segmenten. |
+| M5 | `executeActions()` fragt vor dem Löschen mit Anzahl und dem Hinweis nach, dass kein Papierkorb beteiligt ist. |
+| M6 | Neuer LRU-Cache (`LARGE_PREVIEW_CACHE_SIZE = 20`) für `largePreviewUrl`/`fullResUrl` mit `touchLargePreview()` / `releaseLargePreviews()`. Das gerade angezeigte Foto ist immer das zuletzt benutzte und kann daher nicht verdrängt werden. |
+| M7 | Gescheiterte Fotos werden als Objektreferenz in `failedEntries` festgehalten; die Zählung der Prüfungsfehler läuft über ein Fehler-Flag statt über Textvergleich. |
+
+### Gering
+
+| ID | Änderung |
+|---|---|
+| G1, G2, G11 | `writeIptcKeywordsToJpeg()` (78 Zeilen), `parseIptcIimKeywords()`, die ungenutzte Konstante `EXIF_PREAMBLE` und ein doppelter JSDoc-Block entfernt. |
+| G3 | `downscaleImageToDataUrl` → `downscaleImageToObjectUrl`, `canvasToDataUrl` → `canvasToObjectUrl`. |
+| G4 | Der Thumbnail-Fallback prüft die Ladegeneration und gibt eine verwaiste Object-URL frei. |
+| G5 | `fullResUrl: null` bei der Initialisierung ergänzt. |
+| G6 | Blockgröße in `parseIrbs()` mit `>>> 0` vorzeichenlos gelesen. |
+| G7 | `readAsciiPrefix()` prüft die Puffergrenze und liefert `""` statt über das Ende hinaus zu lesen. |
+| G8 | `readAsciiPrefixLocal()` in `app.js` entfernt; die Stelle nutzt jetzt `readAsciiPrefix()`. |
+| G10 | Favicon als Data-URI eingebettet – die Konsole ist beim Start jetzt vollständig leer. |
+
+**Zusätzlich behoben** (beim Umsetzen aufgefallen): Die Kommentare behaupteten,
+die XMP-Sidecar-Datei sei „bereits beim Schreiben verifiziert" worden – das war
+nicht der Fall. Für alle Formate ohne Direkteinbettung ist sie die einzige
+Ablage der Metadaten. Neu ist deshalb `verifySidecarFile()`, das die Datei vor
+dem Löschen der Quelle frisch zurückliest und vergleicht.
+
+**Nicht angefasst:** G9 (leere `README.md`, fehlende `.gitignore`/Lizenz) und
+G12 (doppelt gepflegtes Handbuch) – beides Repo-Hygiene bzw. ein Prozessthema,
+kein Fehlverhalten des Programms.
+
+### Verifikation
+
+Die Korrekturen wurden gegen die geladene App geprüft: `executeActions()` lief
+vollständig durch, mit Attrappen anstelle der Verzeichnis-Handles, sodass keine
+echten Dateien angefasst wurden. Abgedeckt waren unter anderem eine bereits
+belegte Zieldatei (K1), erzwungenes Scheitern der Einbettung (K2), ein
+Ereignistext mit Schrägstrich (K3), ein Stichwort über 64 Byte (M3), ein JPEG
+mit XMP vor EXIF (M4), abgelehnte und bestätigte Löschabfrage (M5) sowie zwei
+Dateien, deren Namen einander als Präfix enthalten (M7). Zusätzlich lief ein
+Regressionstest über den normalen Verschiebevorgang mit Stichworten und
+Beschreibung, der prüft, dass die Bilddaten ab Start-of-Scan byteidentisch
+bleiben. Alle 40 Prüfungen bestanden; die Konsole ist beim Start fehlerfrei.
+
+Diese Prüfung lag außerhalb des Repositories (siehe V2 – ein dauerhaftes
+Test-Setup fehlt weiterhin).

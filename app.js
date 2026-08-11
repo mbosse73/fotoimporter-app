@@ -80,9 +80,14 @@ function loadSettings() {
     const raw = localStorage.getItem(STORAGE_KEY_SETTINGS);
     if (!raw) return { presets: {}, lastPreset: null, keywordCatalog: createEmptyKeywordCatalog() };
     const parsed = JSON.parse(raw);
-    if (!parsed.presets) parsed.presets = {};
-    if (!parsed.keywordCatalog) parsed.keywordCatalog = createEmptyKeywordCatalog();
+    parsed.presets = normalizePresets(parsed.presets);
+    if (!parsed.keywordCatalog || typeof parsed.keywordCatalog !== "object") {
+      parsed.keywordCatalog = createEmptyKeywordCatalog();
+    }
     normalizeKeywordCatalog(parsed.keywordCatalog);
+    if (typeof parsed.lastPreset !== "string" || !parsed.presets[parsed.lastPreset]) {
+      parsed.lastPreset = null;
+    }
     return parsed;
   } catch (e) {
     console.warn("Einstellungen konnten nicht geladen werden, verwende Standard.", e);
@@ -90,15 +95,80 @@ function loadSettings() {
   }
 }
 
-/** Stellt sicher, dass ein geladener/importierter Katalog alle erwarteten Felder hat. */
+/**
+ * Stellt sicher, dass ein geladener/importierter Katalog alle erwarteten Felder
+ * hat UND dass jedes Feld den erwarteten Typ hat.
+ *
+ * Die Typprüfung ist nicht bloß Kosmetik: Einstellungen lassen sich als beliebige
+ * JSON-Datei importieren, und Stichwort-Labels landen anschließend in der
+ * Oberfläche. Was hier durchrutscht, wandert ungeprüft ins DOM. Einträge, die
+ * nicht die erwartete Form haben, werden deshalb verworfen statt notdürftig
+ * repariert - ein fehlendes Stichwort ist harmloser als ein unbekanntes Objekt
+ * an einer Stelle, an der die Oberfläche eine Zeichenkette erwartet.
+ */
 function normalizeKeywordCatalog(catalog) {
-  if (!Array.isArray(catalog.keywords)) catalog.keywords = [];
-  if (!Array.isArray(catalog.groups)) catalog.groups = [];
-  if (!Array.isArray(catalog.sets)) catalog.sets = [];
-  if (!Array.isArray(catalog.favorites) || catalog.favorites.length !== 9) {
-    const old = Array.isArray(catalog.favorites) ? catalog.favorites : [];
-    catalog.favorites = new Array(9).fill(null).map((_, i) => old[i] || null);
+  const asText = (value) => (typeof value === "string" ? value : "");
+
+  const rawKeywords = Array.isArray(catalog.keywords) ? catalog.keywords : [];
+  catalog.keywords = rawKeywords
+    .filter((k) => k && typeof k === "object")
+    .map((k) => ({ id: asText(k.id) || generateCatalogId(), label: asText(k.label) }))
+    .filter((k) => k.label.length > 0);
+
+  const knownIds = new Set(catalog.keywords.map((k) => k.id));
+  const normalizeContainer = (c) => ({
+    id: asText(c.id) || generateCatalogId(),
+    name: asText(c.name),
+    // Verweise auf nicht (mehr) vorhandene Stichworte fallen weg - sie würden im
+    // Katalog sonst als stumme Lücken auftauchen.
+    keywordIds: (Array.isArray(c.keywordIds) ? c.keywordIds : []).filter((id) => knownIds.has(id)),
+  });
+  const normalizeContainerList = (list) =>
+    (Array.isArray(list) ? list : []).filter((c) => c && typeof c === "object").map(normalizeContainer);
+
+  catalog.groups = normalizeContainerList(catalog.groups);
+  catalog.sets = normalizeContainerList(catalog.sets);
+
+  const rawFavorites = Array.isArray(catalog.favorites) ? catalog.favorites : [];
+  catalog.favorites = new Array(9).fill(null).map((_, i) => {
+    const fav = rawFavorites[i];
+    if (!fav || typeof fav !== "object") return null;
+    if (fav.type === "keyword" && knownIds.has(asText(fav.keywordId))) {
+      return { type: "keyword", keywordId: asText(fav.keywordId) };
+    }
+    if (fav.type === "free" && asText(fav.label)) {
+      return { type: "free", label: asText(fav.label) };
+    }
+    return null;
+  });
+}
+
+/** Gültige Bausteintypen eines Namensschemas (siehe TOKEN_LABELS). */
+const VALID_FORMAT_TOKEN_TYPES = new Set([
+  "date", "event", "counter", "text", "sep_underscore", "sep_dash",
+]);
+
+/**
+ * Bringt die Namensschema-Voreinstellungen auf die erwartete Form. Ein Baustein
+ * mit unbekanntem Typ würde im Builder als "undefined" erscheinen und beim
+ * Bauen des Dateinamens stillschweigend zu einem leeren Teil werden.
+ */
+function normalizePresets(presets) {
+  if (!presets || typeof presets !== "object") return {};
+  const result = {};
+  for (const [name, preset] of Object.entries(presets)) {
+    if (!preset || typeof preset !== "object") continue;
+    const tokens = (Array.isArray(preset.tokens) ? preset.tokens : [])
+      .filter((t) => t && typeof t === "object" && VALID_FORMAT_TOKEN_TYPES.has(t.type))
+      .map((t) => ({ type: t.type }));
+    result[String(name)] = {
+      tokens,
+      counterStart: Number.isFinite(preset.counterStart) ? preset.counterStart : 1,
+      counterDigits: Number.isFinite(preset.counterDigits) ? preset.counterDigits : 3,
+      freeText: typeof preset.freeText === "string" ? preset.freeText : "",
+    };
   }
+  return result;
 }
 
 function saveSettings(settings) {
@@ -207,6 +277,7 @@ async function loadPhotosFromSource() {
       ext,
       thumbUrl: null,
       largePreviewUrl: null,
+      fullResUrl: null,
       thumbFailed: false,
       captureDate: null,
       fileDate: null,
@@ -435,6 +506,16 @@ async function tryWriteKeywordsIntoJpeg(file, keywords, description) {
 function verifyWrittenJpegKeywords(writtenBuffer, expectedKeywords, expectedDescription) {
   const validExpected = expectedKeywords.map((k) => k.trim()).filter((k) => k.length > 0);
   const normalizedExpectedDesc = expectedDescription && expectedDescription.trim() ? expectedDescription.trim() : null;
+
+  // IPTC kürzt jedes Stichwort auf MAX_KEYWORD_BYTES (Vorgabe der IIM-Spezifikation,
+  // siehe buildIptcIimBlock). Für einen exakten Vergleich muss dieselbe Kürzung auf
+  // den Erwartungswert angewendet werden - sonst schlägt der Konsistenz-Check bei
+  // jedem längeren Stichwort fehl, obwohl korrekt geschrieben wurde. XMP kennt diese
+  // Grenze nicht und wird deshalb gegen die UNGEKÜRZTEN Werte geprüft.
+  const expectedIptcKeywords = validExpected.map((k) =>
+    new TextDecoder("utf-8").decode(truncateUtf8(k, MAX_KEYWORD_BYTES))
+  );
+
   try {
     const { segments } = parseJpegSegments(writtenBuffer);
     let iptcData = null;
@@ -442,7 +523,7 @@ function verifyWrittenJpegKeywords(writtenBuffer, expectedKeywords, expectedDesc
 
     for (const seg of segments) {
       if (seg.marker === 0xed) {
-        const prefix = readAsciiPrefixLocal(writtenBuffer, seg.start + 4, PHOTOSHOP_PREAMBLE.length);
+        const prefix = readAsciiPrefix(writtenBuffer, seg.start + 4, PHOTOSHOP_PREAMBLE.length);
         if (prefix === PHOTOSHOP_PREAMBLE) {
           const irbBuffer = writtenBuffer.slice(seg.start + 4 + PHOTOSHOP_PREAMBLE.length, seg.end);
           const irbs = parseIrbs(irbBuffer);
@@ -451,7 +532,7 @@ function verifyWrittenJpegKeywords(writtenBuffer, expectedKeywords, expectedDesc
           }
         }
       } else if (seg.marker === 0xe1) {
-        const prefix = readAsciiPrefixLocal(writtenBuffer, seg.start + 4, XMP_PREAMBLE.length);
+        const prefix = readAsciiPrefix(writtenBuffer, seg.start + 4, XMP_PREAMBLE.length);
         if (prefix === XMP_PREAMBLE) {
           const xmpText = new TextDecoder("utf-8").decode(
             writtenBuffer.slice(seg.start + 4 + XMP_PREAMBLE.length, seg.end)
@@ -461,7 +542,7 @@ function verifyWrittenJpegKeywords(writtenBuffer, expectedKeywords, expectedDesc
       }
     }
 
-    const iptcKeywordsOk = iptcData && JSON.stringify(iptcData.keywords) === JSON.stringify(validExpected);
+    const iptcKeywordsOk = iptcData && JSON.stringify(iptcData.keywords) === JSON.stringify(expectedIptcKeywords);
     const xmpKeywordsOk = xmpData && JSON.stringify(xmpData.keywords) === JSON.stringify(validExpected);
 
     // Für IPTC wird die Beschreibung ggf. auf MAX_CAPTION_BYTES gekürzt (siehe
@@ -477,15 +558,6 @@ function verifyWrittenJpegKeywords(writtenBuffer, expectedKeywords, expectedDesc
   } catch (e) {
     return false;
   }
-}
-
-/** Lokale Kopie der Präfix-Lese-Hilfsfunktion (identisch zu jpeg-segments.js internem readAsciiPrefix). */
-function readAsciiPrefixLocal(buffer, start, length) {
-  let str = "";
-  for (let i = 0; i < length; i++) {
-    str += String.fromCharCode(buffer[start + i]);
-  }
-  return str;
 }
 
 /**
@@ -505,6 +577,44 @@ async function writeXmpSidecar(targetDirHandle, photoBaseNameWithoutExt, keyword
   const writable = await fileHandle.createWritable();
   await writable.write(xmpContent);
   await writable.close();
+}
+
+/**
+ * Liest eine soeben geschriebene XMP-Sidecar-Datei frisch vom Dateisystem zurück
+ * und prüft, ob Stichworte und Beschreibung den erwarteten Werten entsprechen.
+ *
+ * Für alle Formate ohne Direkteinbettung (PNG, HEIC, RAW, ...) ist die Sidecar-
+ * Datei die EINZIGE Ablage der Metadaten. Sie vor dem irreversiblen Löschen der
+ * Quelle ungeprüft zu lassen, wäre die Lücke in einer sonst lückenlosen Kette.
+ *
+ * @param {FileSystemDirectoryHandle} targetDirHandle
+ * @param {string} photoBaseNameWithoutExt
+ * @param {string[]} expectedKeywords
+ * @param {string} [expectedDescription]
+ * @returns {Promise<{ok: boolean, reason?: string}>}
+ */
+async function verifySidecarFile(targetDirHandle, photoBaseNameWithoutExt, expectedKeywords, expectedDescription) {
+  const sidecarName = `${photoBaseNameWithoutExt}.xmp`;
+  try {
+    const fileHandle = await targetDirHandle.getFileHandle(sidecarName);
+    const text = await (await fileHandle.getFile()).text();
+    const parsed = parseXmpData(text);
+
+    const validExpected = expectedKeywords.map((k) => k.trim()).filter((k) => k.length > 0);
+    if (JSON.stringify(parsed.keywords) !== JSON.stringify(validExpected)) {
+      return { ok: false, reason: `Stichworte in „${sidecarName}" weichen ab` };
+    }
+
+    const normalizedExpectedDesc =
+      expectedDescription && expectedDescription.trim() ? expectedDescription.trim() : null;
+    if (parsed.description !== normalizedExpectedDesc) {
+      return { ok: false, reason: `Beschreibung in „${sidecarName}" weicht ab` };
+    }
+
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: `„${sidecarName}" konnte nicht zur Prüfung gelesen werden: ${e.message}` };
+  }
 }
 
 /* ============================================================
@@ -565,8 +675,11 @@ function getComparableImageBytes(buffer, ext) {
  * @param {string} targetFileName
  * @param {Uint8Array|File} expectedContent - was tatsächlich geschrieben werden sollte
  * @param {string} ext - Dateiendung der Quelle (für JPEG-Sonderbehandlung)
- * @param {string[]} [expectedKeywords]
- * @param {string} [expectedDescription]
+ * @param {string[]|null} [expectedKeywords] - nur setzen, wenn die Metadaten
+ *   tatsächlich in die Datei EINGEBETTET wurden. Beim Sidecar-Fallback muss hier
+ *   null stehen, sonst würden in der Zieldatei Metadaten erwartet, die dort
+ *   erwartungsgemäß gar nicht stehen.
+ * @param {string|null} [expectedDescription] - dito
  * @returns {Promise<{ok: boolean, reason?: string}>}
  */
 async function verifyMovedFile(targetDirHandle, targetFileName, expectedContent, ext, expectedKeywords, expectedDescription) {
@@ -648,12 +761,54 @@ function revokePhotoObjectUrls(photos) {
     if (entry.thumbUrl && entry.thumbUrl.startsWith("blob:")) {
       URL.revokeObjectURL(entry.thumbUrl);
     }
-    if (entry.largePreviewUrl && entry.largePreviewUrl.startsWith("blob:")) {
-      URL.revokeObjectURL(entry.largePreviewUrl);
-    }
-    if (entry.fullResUrl && entry.fullResUrl.startsWith("blob:")) {
-      URL.revokeObjectURL(entry.fullResUrl);
-    }
+    releaseLargePreviews(entry);
+    forgetLargePreview(entry);
+  }
+}
+
+/* ------------------------------------------------------------
+   GROSSVORSCHAUEN: BEGRENZTER CACHE (LRU)
+   ------------------------------------------------------------
+   largePreviewUrl (bis 1600px) und fullResUrl (Lupe, bis 6000px) sind um ein
+   Vielfaches größer als die Grid-Thumbnails. Ohne Obergrenze bleibt jede einmal
+   im Leuchttisch besuchte Vorschau bis zum Ordnerwechsel im Speicher - bei einem
+   Kameraordner mit vierstelliger Fotozahl ist das der wahrscheinlichste Weg in
+   einen zähen oder abstürzenden Tab. Deshalb: nur die zuletzt benutzten Fotos
+   behalten, ältere Vorschauen freigeben. Sie werden bei Bedarf neu erzeugt.
+   Die kleinen Grid-Thumbnails sind davon nicht betroffen.
+   ------------------------------------------------------------ */
+
+const LARGE_PREVIEW_CACHE_SIZE = 20;
+const largePreviewLru = []; // PhotoEntry-Referenzen, älteste zuerst
+
+/** Gibt die großen Vorschau-URLs eines Fotos frei (Thumbnail bleibt erhalten). */
+function releaseLargePreviews(entry) {
+  if (entry.largePreviewUrl && entry.largePreviewUrl.startsWith("blob:")) {
+    URL.revokeObjectURL(entry.largePreviewUrl);
+  }
+  if (entry.fullResUrl && entry.fullResUrl.startsWith("blob:")) {
+    URL.revokeObjectURL(entry.fullResUrl);
+  }
+  entry.largePreviewUrl = null;
+  entry.fullResUrl = null;
+}
+
+/** Entfernt ein Foto aus der LRU-Liste, ohne etwas freizugeben. */
+function forgetLargePreview(entry) {
+  const pos = largePreviewLru.indexOf(entry);
+  if (pos !== -1) largePreviewLru.splice(pos, 1);
+}
+
+/**
+ * Meldet ein Foto als "gerade benutzt" und gibt die Vorschauen des ältesten
+ * Fotos frei, sobald die Obergrenze überschritten ist. Da das aktuell angezeigte
+ * Foto immer das zuletzt benutzte ist, kann es nie selbst verdrängt werden.
+ */
+function touchLargePreview(entry) {
+  forgetLargePreview(entry);
+  largePreviewLru.push(entry);
+  while (largePreviewLru.length > LARGE_PREVIEW_CACHE_SIZE) {
+    releaseLargePreviews(largePreviewLru.shift());
   }
 }
 
@@ -698,9 +853,12 @@ async function loadOneThumbnail(index, myGeneration) {
       // verwenden. Das Dekodieren/Rastern voller Kamerabilder für eine 150px-Kachel
       // ist der Haupttäter für Ruckeln bei der Navigation, da beim Zeilenwechsel
       // (Pfeil hoch/runter) mehrere solcher Bilder gleichzeitig sichtbar werden.
-      const dataUrl = await downscaleImageToDataUrl(file, 320);
-      if (myGeneration !== thumbnailLoadGeneration) return;
-      entry.thumbUrl = dataUrl;
+      const objectUrl = await downscaleImageToObjectUrl(file, 320);
+      if (myGeneration !== thumbnailLoadGeneration) {
+        URL.revokeObjectURL(objectUrl); // Ordner hat inzwischen gewechselt - nicht liegen lassen
+        return;
+      }
+      entry.thumbUrl = objectUrl;
     } else {
       entry.thumbFailed = true; // RAW ohne einbettbares Vorschaubild -> grauer Kasten
     }
@@ -709,6 +867,9 @@ async function loadOneThumbnail(index, myGeneration) {
     // Originaldatei direkt verwenden statt komplett auf "keine Vorschau" zu gehen.
     try {
       const file = await entry.handle.getFile();
+      // Auch hier die Generation prüfen: ohne diese Abfrage hinge die URL an einem
+      // bereits verworfenen Eintrag und würde nie wieder freigegeben.
+      if (myGeneration !== thumbnailLoadGeneration) return;
       entry.thumbUrl = URL.createObjectURL(file);
     } catch (e2) {
       entry.thumbFailed = true;
@@ -724,7 +885,7 @@ async function loadOneThumbnail(index, myGeneration) {
  * Nutzt createImageBitmap (läuft off-thread, blockiert den Hauptthread nicht
  * beim Decodieren) statt eines <img>-Elements.
  */
-async function downscaleImageToDataUrl(file, maxEdge) {
+async function downscaleImageToObjectUrl(file, maxEdge) {
   const bitmap = await createImageBitmap(file);
   try {
     const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
@@ -738,13 +899,13 @@ async function downscaleImageToDataUrl(file, maxEdge) {
     ctx.drawImage(bitmap, 0, 0, targetW, targetH);
 
     // JPEG-Encoding ist deutlich kompakter als PNG für Fotos und reicht für Thumbnails.
-    return await canvasToDataUrl(canvas);
+    return await canvasToObjectUrl(canvas);
   } finally {
     bitmap.close(); // Speicher des dekodierten Vollbilds sofort freigeben
   }
 }
 
-function canvasToDataUrl(canvas) {
+function canvasToObjectUrl(canvas) {
   return new Promise((resolve, reject) => {
     canvas.toBlob(
       (blob) => {
@@ -1089,6 +1250,18 @@ const gridWrap = document.getElementById("gridWrap");
 gridWrap.addEventListener("keydown", (ev) => {
   if (state.photos.length === 0) return;
 
+  // Strg/Cmd+A ist das einzige Kürzel mit Modifikator - separat vor der Weiche.
+  if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && (ev.key === "a" || ev.key === "A")) {
+    ev.preventDefault();
+    selectAll();
+    return;
+  }
+  // Alle übrigen Kürzel sind einzelne Tasten. Ohne diese Sperre würde z.B.
+  // Strg+V (einfügen) Fotos zum Verschieben und Strg+L (Adresszeile) Fotos zum
+  // LÖSCHEN markieren, und Strg+1..9 den Tab-Wechsel abfangen - jeweils inkl.
+  // preventDefault(), sodass der Browser seine eigene Aktion nicht mehr ausführt.
+  if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+
   switch (ev.key) {
     case "ArrowRight":
       ev.preventDefault();
@@ -1137,13 +1310,6 @@ gridWrap.addEventListener("keydown", (ev) => {
       }
       break;
     }
-    case "a":
-    case "A":
-      if (ev.ctrlKey || ev.metaKey) {
-        ev.preventDefault();
-        selectAll();
-      }
-      break;
     case "Enter":
       ev.preventDefault();
       if (state.cursorIndex !== -1) openLightbox(state.cursorIndex);
@@ -1242,6 +1408,8 @@ async function renderQuickLookImage(entry) {
     await loadLargePreview(entry);
     if (!quickLookVisible || quickLookIndex !== myIndex) return; // währenddessen geschlossen
     renderQuickLookImageElement(entry, wrap);
+  } else if (entry.largePreviewUrl) {
+    touchLargePreview(entry); // bereits geladen: als zuletzt benutzt markieren, nicht verdrängen
   }
 }
 
@@ -1776,10 +1944,21 @@ function setStatus(text) {
   document.getElementById("statusText").textContent = text;
 }
 
+/**
+ * Maskiert einen Text für die Einbettung in HTML. Maskiert AUCH beide
+ * Anführungszeichen und ist damit nicht nur für Textinhalte, sondern auch für
+ * Attributwerte sicher (`value="${escapeHtml(...)}"`) - eine frühere Variante
+ * über textContent/innerHTML tat das nicht, wodurch ein Stichwort mit einem
+ * Anführungszeichen aus dem Attribut ausbrechen und beliebige weitere Attribute
+ * einschleusen konnte.
+ */
 function escapeHtml(str) {
-  const div = document.createElement("div");
-  div.textContent = str;
-  return div.innerHTML;
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 /* ============================================================
@@ -2085,6 +2264,8 @@ async function showLightboxImage(entry) {
         renderLightboxImageElement(state.photos[lightboxIndex]);
       }
     });
+  } else if (entry.largePreviewUrl) {
+    touchLargePreview(entry); // bereits geladen: als zuletzt benutzt markieren, nicht verdrängen
   }
 }
 
@@ -2107,7 +2288,8 @@ function renderLightboxImageElement(entry) {
 async function loadLargePreview(entry) {
   try {
     const file = await entry.handle.getFile();
-    entry.largePreviewUrl = await downscaleImageToDataUrl(file, 1600);
+    entry.largePreviewUrl = await downscaleImageToObjectUrl(file, 1600);
+    touchLargePreview(entry);
   } catch (e) {
     // Kein Fehler-Toast nötig: das kleine Thumbnail bleibt als Fallback sichtbar.
   }
@@ -2130,11 +2312,15 @@ const LOUPE_MAX_EDGE = 6000; // praktisch "keine Verkleinerung" für alle realis
 
 /** Lädt (mit Cache am PhotoEntry) eine möglichst hochauflösende Bildversion speziell für die Lupe. */
 async function getFullResUrlForLoupe(entry) {
-  if (entry.fullResUrl) return entry.fullResUrl;
+  if (entry.fullResUrl) {
+    touchLargePreview(entry);
+    return entry.fullResUrl;
+  }
   if (entry.ext !== "jpg" && entry.ext !== "jpeg") return entry.largePreviewUrl || entry.thumbUrl;
   try {
     const file = await entry.handle.getFile();
-    entry.fullResUrl = await downscaleImageToDataUrl(file, LOUPE_MAX_EDGE);
+    entry.fullResUrl = await downscaleImageToObjectUrl(file, LOUPE_MAX_EDGE);
+    touchLargePreview(entry);
     return entry.fullResUrl;
   } catch (e) {
     return entry.largePreviewUrl || entry.thumbUrl; // Fallback auf die bereits vorhandene, kleinere Version
@@ -2288,6 +2474,9 @@ function onLightboxKeydown(ev) {
     return;
   }
   if (isTypingInInput) return; // andere Kürzel nicht abfangen, während getippt wird
+  // Kürzel mit Modifikator gehören dem Browser (Strg+V, Strg+L, Strg+1..9, ...) -
+  // sie dürfen hier nicht als Aktions-Kürzel umgedeutet werden.
+  if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
 
   switch (ev.key) {
     case "ArrowRight":
@@ -2684,8 +2873,50 @@ document.getElementById("freeText").addEventListener("input", (ev) => {
   updateFormatPreview();
 });
 
+/**
+ * Zeichen, die auf gängigen Dateisystemen in Dateinamen unzulässig sind
+ * (Windows-Regelsatz, der auch macOS und Linux mit abdeckt) plus Steuerzeichen.
+ * Der Schrägstrich ist der gefährlichste davon: die File System Access API weist
+ * jeden Namen mit Pfadseparator zurück, und ein Ereignistext wie "Urlaub 2024/25"
+ * würde sonst JEDE Datei des Durchgangs scheitern lassen.
+ */
+const FILENAME_FORBIDDEN_CHARS = /[<>:"/\\|?*\u0000-\u001f]/g;
+
+/** Unter Windows reservierte Gerätenamen - als Dateiname (auch mit Endung) unzulässig. */
+const WINDOWS_RESERVED_NAMES = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i;
+
+/** Obergrenze für den Basisnamen; lässt Platz für Endung, "_1"-Suffix und ".xmp". */
+const MAX_FILENAME_BASE_LENGTH = 200;
+
+/**
+ * Bereitet einen frei eingegebenen Text (Ereignis, Freitext) für die Verwendung
+ * als Baustein eines Dateinamens auf: Leerraum wird zu Unterstrichen, unzulässige
+ * Zeichen zu Bindestrichen. Wird auch für die Live-Vorschau im Ereignis-Dialog
+ * verwendet, damit der Nutzer die Umwandlung VOR dem Start sieht.
+ */
 function sanitizeEventText(text) {
-  return text.trim().replace(/\s+/g, "_");
+  return text
+    .trim()
+    .replace(/\s+/g, "_")
+    .replace(FILENAME_FORBIDDEN_CHARS, "-");
+}
+
+/**
+ * Letzte Instanz für den fertig zusammengesetzten Basisnamen (ohne Endung):
+ * entfernt unzulässige Zeichen, führende/abschließende Punkte und Leerzeichen
+ * (ein Name wie ".foo" oder "foo." ist je nach Dateisystem versteckt oder
+ * unzulässig), begrenzt die Länge und entschärft reservierte Gerätenamen.
+ */
+function sanitizeFileBaseName(baseName) {
+  let name = baseName.replace(FILENAME_FORBIDDEN_CHARS, "-");
+  name = name.replace(/^[.\s]+/, "").replace(/[.\s]+$/, "");
+  name = name.replace(/[_-]{2,}/g, (match) => match[0]);
+  name = name.replace(/^[_-]+/, "").replace(/[_-]+$/, "");
+  if (name.length > MAX_FILENAME_BASE_LENGTH) {
+    name = name.slice(0, MAX_FILENAME_BASE_LENGTH).replace(/[_\-.\s]+$/, "");
+  }
+  if (WINDOWS_RESERVED_NAMES.test(name)) name = `_${name}`;
+  return name;
 }
 
 /**
@@ -2722,7 +2953,7 @@ function buildFilename(ctx) {
   let joined = parts.join("");
   joined = joined.replace(/[_-]{2,}/g, (match) => match[0]); // doppelte Trenner -> einer
   joined = joined.replace(/^[_-]+/, "").replace(/[_-]+$/, ""); // Rand-Trenner entfernen
-  return joined;
+  return sanitizeFileBaseName(joined);
 }
 
 function updateFormatPreview() {
@@ -2860,8 +3091,16 @@ document.getElementById("importSettingsFile").addEventListener("change", async (
     if (!parsed || typeof parsed !== "object" || !parsed.presets) {
       throw new Error("Ungültiges Format der Einstellungsdatei.");
     }
-    if (!parsed.keywordCatalog) parsed.keywordCatalog = createEmptyKeywordCatalog();
+    // Importierte Daten stammen aus einer beliebigen Datei - vor der Übernahme
+    // auf die erwartete Form bringen (siehe normalizeKeywordCatalog).
+    parsed.presets = normalizePresets(parsed.presets);
+    if (!parsed.keywordCatalog || typeof parsed.keywordCatalog !== "object") {
+      parsed.keywordCatalog = createEmptyKeywordCatalog();
+    }
     normalizeKeywordCatalog(parsed.keywordCatalog);
+    if (typeof parsed.lastPreset !== "string" || !parsed.presets[parsed.lastPreset]) {
+      parsed.lastPreset = null;
+    }
     appSettings = parsed;
     saveSettings(appSettings);
     applyDefaultFormatIfNone();
@@ -2930,10 +3169,36 @@ async function executeActions(eventText) {
     return;
   }
 
+  // Löschen ist der einzige unumkehrbare Schritt in diesem Programm: removeEntry()
+  // entfernt die Datei endgültig, die File System Access API kennt keinen Papierkorb.
+  // Deshalb hier eine ausdrückliche Rückfrage - das Löschen einer Voreinstellung
+  // oder eines Stichworts fragt schließlich auch nach.
+  if (deleteTargets.length > 0) {
+    const anzahl = deleteTargets.length === 1
+      ? "1 Foto wird"
+      : `${deleteTargets.length} Fotos werden`;
+    const confirmed = confirm(
+      `${anzahl} endgültig aus dem Quellverzeichnis gelöscht.\n\n` +
+      `Das geschieht OHNE Papierkorb und kann nicht rückgängig gemacht werden.\n\n` +
+      `Fortfahren?`
+    );
+    if (!confirmed) return;
+  }
+
   showProgress(true, "Verarbeite Dateien…", 0, total);
   let done = 0;
   let counter = currentCounterStart;
   const errors = [];
+  // Fehlgeschlagene Fotos werden als Objektreferenz festgehalten, nicht über den
+  // Dateinamen aus den Fehlertexten zurückgerechnet - ein Name, der zufällig
+  // Präfix eines anderen ist, hätte sonst den Fehler dem falschen Foto zugeordnet
+  // und ein tatsächlich nicht verarbeitetes Foto aus der Liste entfernt.
+  const failedEntries = new Set();
+  let verificationFailureCount = 0;
+
+  // Das Dateisystem entscheidet über freie Namen; Reste aus einem früheren
+  // Durchgang (ggf. mit anderem Zielverzeichnis) würden nur stören.
+  usedTargetNames.clear();
 
   // 1) Verschieben: kopieren ins Ziel (mit neuem Namen), dann im Quellordner löschen
   for (const entry of moveTargets) {
@@ -2941,7 +3206,7 @@ async function executeActions(eventText) {
       const file = await entry.handle.getFile();
       const date = entry.captureDate || new Date(file.lastModified);
       const baseName = buildFilename({ date, event: eventText, counter });
-      const finalName = ensureUniqueName(baseName || "foto", entry.ext);
+      const finalName = await ensureUniqueName(state.targetDirHandle, baseName || "foto", entry.ext);
       const finalBaseNameWithoutExt = finalName.slice(0, finalName.lastIndexOf("."));
 
       // Die Beschreibung ist der UNVERÄNDERTE Ereignistext (nur getrimmt, OHNE die
@@ -2958,10 +3223,12 @@ async function executeActions(eventText) {
       // die Direkteinbettung geklappt hat - das ist der garantiert sichere,
       // formatunabhängige Weg.
       let fileContentToWrite = file;
+      let metadataEmbedded = false; // wurden die Metadaten TATSÄCHLICH in die Datei geschrieben?
       if (hasMetadataToWrite && DIRECT_WRITE_EXTENSIONS.has(entry.ext)) {
         const writtenBuffer = await tryWriteKeywordsIntoJpeg(file, entry.assignedKeywords, description);
         if (writtenBuffer) {
           fileContentToWrite = writtenBuffer;
+          metadataEmbedded = true;
         } else {
           showToast(
             `Hinweis: Metadaten für „${entry.name}“ konnten nicht direkt in die Datei geschrieben werden - sie liegen als XMP-Sidecar-Datei bei.`,
@@ -2991,19 +3258,47 @@ async function executeActions(eventText) {
       // automatisch gelöscht (falls die Prüfung selbst fälschlich anschlägt,
       // wäre das riskanter als eine verdächtige Datei stehen zu lassen) - der
       // Nutzer wird stattdessen auf eine manuelle Prüfung hingewiesen.
+      // Die Metadaten-Prüfung darf NUR verlangt werden, wenn tatsächlich
+      // eingebettet wurde. Andernfalls (Fallback auf die unveränderte
+      // Originaldatei plus Sidecar) enthält die Zieldatei erwartungsgemäß keine
+      // eingebetteten Stichworte - die Prüfung würde zwangsläufig fehlschlagen und
+      // den Verschiebevorgang abbrechen, obwohl dem Nutzer gerade gemeldet wurde,
+      // der Sidecar-Weg greife. Die Sidecar-Datei selbst wird unten separat geprüft.
       const verification = await verifyMovedFile(
         state.targetDirHandle,
         finalName,
         fileContentToWrite,
         entry.ext,
-        entry.assignedKeywords,
-        description
+        metadataEmbedded ? entry.assignedKeywords : null,
+        metadataEmbedded ? description : null
       );
       if (!verification.ok) {
-        throw new Error(
+        const err = new Error(
           `Zieldatei-Prüfung fehlgeschlagen: ${verification.reason}. ` +
           `Die Quelldatei wurde NICHT gelöscht. Die Datei „${finalName}“ im Zielverzeichnis sollte manuell geprüft werden.`
         );
+        err.isVerificationFailure = true;
+        throw err;
+      }
+
+      // Liegen die Metadaten (auch) in der Sidecar-Datei, ist sie für alle Formate
+      // ohne Direkteinbettung die EINZIGE Quelle - also ebenfalls zurücklesen und
+      // prüfen, bevor das Original gelöscht wird.
+      if (hasMetadataToWrite) {
+        const sidecarCheck = await verifySidecarFile(
+          state.targetDirHandle,
+          finalBaseNameWithoutExt,
+          entry.assignedKeywords,
+          description
+        );
+        if (!sidecarCheck.ok) {
+          const err = new Error(
+            `Prüfung der XMP-Sidecar-Datei fehlgeschlagen: ${sidecarCheck.reason}. ` +
+            `Die Quelldatei wurde NICHT gelöscht.`
+          );
+          err.isVerificationFailure = true;
+          throw err;
+        }
       }
 
       await state.sourceDirHandle.removeEntry(entry.name);
@@ -3014,6 +3309,8 @@ async function executeActions(eventText) {
     } catch (e) {
       console.error("Fehler beim Verschieben von", entry.name, e);
       errors.push(`${entry.name}: ${e.message}`);
+      failedEntries.add(entry);
+      if (e.isVerificationFailure) verificationFailureCount++;
       done++;
       showProgress(true, "Verschiebe Dateien…", done, total, entry.name);
     }
@@ -3028,6 +3325,7 @@ async function executeActions(eventText) {
     } catch (e) {
       console.error("Fehler beim Löschen von", entry.name, e);
       errors.push(`${entry.name}: ${e.message}`);
+      failedEntries.add(entry);
       done++;
       showProgress(true, "Lösche Dateien…", done, total, entry.name);
     }
@@ -3041,7 +3339,7 @@ async function executeActions(eventText) {
   const removedEntries = [];
   for (const entry of state.photos) {
     const wasTarget = entry.action === "move" || entry.action === "delete";
-    const failed = errors.some((msg) => msg.startsWith(entry.name + ":"));
+    const failed = failedEntries.has(entry);
     if (wasTarget && !failed) { removedEntries.push(entry); continue; } // erfolgreich verarbeitet -> aus Liste entfernen
     if (wasTarget && failed) entry.action = "none"; // Fehlgeschlagen: Aktion zurücksetzen, Datei bleibt sichtbar
     stillPresent.push(entry);
@@ -3059,15 +3357,14 @@ async function executeActions(eventText) {
   updateBottomBar();
 
   if (errors.length > 0) {
-    const verificationFailures = errors.filter((msg) => msg.includes("Zieldatei-Prüfung fehlgeschlagen")).length;
-    if (verificationFailures > 0) {
+    if (verificationFailureCount > 0) {
       showToast(
-        `${verificationFailures} Datei(en) wurden zur Sicherheit NICHT aus dem Quellverzeichnis gelöscht, da die Prüfung der Zieldatei fehlgeschlagen ist. Details in der Konsole.`,
+        `${verificationFailureCount} Datei(en) wurden zur Sicherheit NICHT aus dem Quellverzeichnis gelöscht, da die Prüfung der Zieldatei fehlgeschlagen ist. Details in der Konsole.`,
         "error",
         9000
       );
     }
-    const otherFailures = errors.length - verificationFailures;
+    const otherFailures = errors.length - verificationFailureCount;
     if (otherFailures > 0) {
       showToast(`${otherFailures} weitere Datei(en) konnten nicht verarbeitet werden. Details in der Konsole.`, "error", 8000);
     }
@@ -3076,16 +3373,66 @@ async function executeActions(eventText) {
   }
 }
 
+/**
+ * Namen, die in DIESEM Durchgang bereits vergeben wurden. Nötig zusätzlich zur
+ * Prüfung auf dem Dateisystem, weil die Datei zu einem gerade reservierten Namen
+ * noch nicht geschrieben ist, wenn der Name für das nächste Foto gesucht wird.
+ * Wird zu Beginn jedes Durchgangs geleert - das Dateisystem ist die maßgebliche
+ * Instanz, ein Altbestand aus einem früheren (womöglich anderen) Zielverzeichnis
+ * würde nur unnötige "_1"-Suffixe erzeugen.
+ */
 const usedTargetNames = new Set();
 
-function ensureUniqueName(baseName, ext) {
+/** Name der XMP-Sidecar-Datei, die zu einem Zieldateinamen gehört. */
+function sidecarNameFor(fileName) {
+  const dot = fileName.lastIndexOf(".");
+  return (dot === -1 ? fileName : fileName.slice(0, dot)) + ".xmp";
+}
+
+/** Prüft, ob im Zielverzeichnis bereits eine Datei dieses Namens liegt. */
+async function targetFileExists(targetDirHandle, name) {
+  try {
+    await targetDirHandle.getFileHandle(name);
+    return true;
+  } catch (e) {
+    if (e.name === "NotFoundError") return false;
+    // Anderer Fehler (z.B. fehlende Berechtigung): im Zweifel als "existiert"
+    // behandeln und ausweichen, statt eine womöglich vorhandene Datei zu überschreiben.
+    return true;
+  }
+}
+
+/**
+ * Ermittelt einen im Zielverzeichnis garantiert freien Dateinamen.
+ *
+ * Prüft dazu ausdrücklich das DATEISYSTEM und nicht nur die in dieser Sitzung
+ * vergebenen Namen: getFileHandle(name, {create:true}) + createWritable() würde
+ * eine bestehende Datei sonst kommentarlos überschreiben, und die Sicherheits-
+ * prüfung danach würde das nicht bemerken (die neu geschriebene Datei ist ja in
+ * sich stimmig) - die Quelldatei würde anschließend gelöscht und der bisherige
+ * Inhalt der Zieldatei wäre unwiederbringlich weg.
+ *
+ * Der Name der zugehörigen XMP-Sidecar-Datei wird mitgeprüft und mitreserviert,
+ * damit zwei Fotos mit gleichem Basisnamen aber verschiedener Endung (foto.jpg /
+ * foto.png) sich nicht gegenseitig die Sidecar-Datei überschreiben.
+ */
+async function ensureUniqueName(targetDirHandle, baseName, ext) {
   let candidate = `${baseName}.${ext}`;
   let n = 1;
-  while (usedTargetNames.has(candidate)) {
+  while (
+    usedTargetNames.has(candidate) ||
+    usedTargetNames.has(sidecarNameFor(candidate)) ||
+    (await targetFileExists(targetDirHandle, candidate)) ||
+    (await targetFileExists(targetDirHandle, sidecarNameFor(candidate)))
+  ) {
     candidate = `${baseName}_${n}.${ext}`;
     n++;
+    if (n > 9999) {
+      throw new Error(`Kein freier Dateiname für „${baseName}.${ext}" im Zielverzeichnis gefunden.`);
+    }
   }
   usedTargetNames.add(candidate);
+  usedTargetNames.add(sidecarNameFor(candidate));
   return candidate;
 }
 
@@ -3794,6 +4141,8 @@ const HELP_CHAPTERS = [
       </ul>
       <p>Diese Tasten wirken auf das angesteuerte Foto oder, bei aktiver Mehrfachauswahl, auf alle ausgewählten Fotos.</p>
       <p>Der Button „Aktionen ausführen ▶“ führt alle gesetzten Aktionen aus. Bei mindestens einem zum Verschieben markierten Foto fragt das Programm zuvor nach einer Ereignisbeschreibung.</p>
+      <p>Bei mindestens einem zum Löschen markierten Foto erscheint zusätzlich eine Sicherheitsabfrage mit der Anzahl der betroffenen Fotos. Gelöschte Dateien landen <b>nicht im Papierkorb</b> und lassen sich nicht wiederherstellen.</p>
+      <p>Die Kürzel wirken nur als einzelne Tasten. <kbd>Strg</kbd>/<kbd>Cmd</kbd> in Kombination (z. B. <kbd>Strg</kbd>+<kbd>V</kbd> zum Einfügen) bleibt dem Browser überlassen – einzige Ausnahme ist <kbd>Strg</kbd>/<kbd>Cmd</kbd>+<kbd>A</kbd> für „alles auswählen“.</p>
     `,
   },
   {
@@ -3868,7 +4217,7 @@ const HELP_CHAPTERS = [
     html: `
       <h3>Namensschema beim Verschieben</h3>
       <p>Über „⚙️ Namensschema…“ lässt sich der Ziel-Dateiname aus Bausteinen (Datum, Ereignis, Zähler, Freitext, Trenner) per Drag &amp; Drop zusammensetzen. Schemata lassen sich als Voreinstellung speichern.</p>
-      <p>Beim Verschieben fragt das Programm nach einer Ereignisbeschreibung, die sowohl in den Dateinamen einfließt (Leerzeichen → Unterstriche) als auch unverändert als Beschreibung in die Metadaten geschrieben wird.</p>
+      <p>Beim Verschieben fragt das Programm nach einer Ereignisbeschreibung, die sowohl in den Dateinamen einfließt (Leerzeichen → Unterstriche, in Dateinamen unzulässige Zeichen wie <code>/ \\ : * ? " &lt; &gt; |</code> → Bindestriche) als auch unverändert als Beschreibung in die Metadaten geschrieben wird. Die Vorschau im Ereignis-Dialog zeigt das Ergebnis dieser Umwandlung.</p>
     `,
   },
   {
@@ -3889,7 +4238,8 @@ const HELP_CHAPTERS = [
     title: "Sicherheit beim Verschieben",
     html: `
       <h3>Sicherheit beim Verschieben</h3>
-      <p>Vor dem Löschen der Quelldatei prüft das Programm die neu geschriebene Zieldatei aktiv: Größe, Prüfsumme der Bilddaten (SHA-256, bei JPEG nur der garantiert unveränderte Bildanteil) sowie ggf. die geschriebenen Metadaten.</p>
+      <p>Es wird <b>nie eine vorhandene Datei im Zielverzeichnis überschrieben</b>: Ist der geplante Name dort (oder als zugehörige <code>.xmp</code>-Datei) schon vergeben, weicht das Programm auf <code>name_1</code>, <code>name_2</code> usw. aus – auch über mehrere Durchgänge und Programmstarts hinweg.</p>
+      <p>Vor dem Löschen der Quelldatei prüft das Programm die neu geschriebene Zieldatei aktiv: Größe, Prüfsumme der Bilddaten (SHA-256, bei JPEG nur der garantiert unveränderte Bildanteil), die eingebetteten Metadaten sowie – falls geschrieben – den Inhalt der XMP-Sidecar-Datei.</p>
       <p>Schlägt eine Prüfung fehl, wird die Quelldatei <b>nicht gelöscht</b>, das Foto bleibt im Grid sichtbar, und eine Meldung weist auf die betroffene Datei hin.</p>
     `,
   },

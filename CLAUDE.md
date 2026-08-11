@@ -67,13 +67,18 @@ Deployment = die Dateien auf einen beliebigen Static-Host legen (oder lokal
 
 ## Tests
 
-**Es sind aktuell keine Tests vorhanden** – kein Test-Runner, keine Testdateien,
+**Es sind keine Tests im Repository** – kein Test-Runner, keine Testdateien,
 keine CI. Die Prüf-Schritte, die stattdessen gelten, stehen unter
 [Definition of Done](#definition-of-done).
 
 Bemerkenswert: alle Hilfsmodule enden mit `if (typeof module !== "undefined")
 module.exports = { … }`. Sie sind damit **bereits ohne Änderung in Node
-testbar** – ein Test-Setup könnte sie direkt per `require()` laden.
+testbar** – ein Test-Setup könnte sie direkt per `require()` laden. Für
+`app.js` selbst funktioniert das nicht (Zugriff auf `document` beim Laden);
+dort führt der Weg über einen Browser-Test, in dem sich die Verzeichnis-Handles
+durch Attrappen ersetzen lassen – so lässt sich `executeActions()` vollständig
+durchspielen, ohne echte Dateien anzufassen. Genau so wurden die in
+`ANALYSIS.md` dokumentierten Korrekturen verifiziert.
 
 ## Datenmodell
 
@@ -176,22 +181,28 @@ oder `git checkout stand-vor-<thema> -- <datei>` für einzelne Dateien. Auf
 
 ## Bekannte Besonderheiten und Fallstricke
 
-- **`usedTargetNames` prüft nicht das Dateisystem.** Das Set für eindeutige
-  Zielnamen lebt nur im Speicher und wird nie geleert – bestehende Dateien im
-  Zielverzeichnis können dadurch überschrieben werden. Kritischster offener
-  Befund, Details in `ANALYSIS.md` (K1).
-- **Der dokumentierte „Sidecar-Fallback" greift nicht.** Wenn die direkte
-  JPEG-Einbettung scheitert, schlägt die anschließende Zieldatei-Prüfung
-  zwangsläufig fehl und die Datei wird gar nicht verschoben (`ANALYSIS.md`, K2).
-- **`sanitizeEventText()` ersetzt nur Leerzeichen.** Zeichen wie `/`, `:` oder
-  `?` im Ereignistext landen unverändert im Dateinamen und lassen den ganzen
-  Verschiebe-Durchgang scheitern (`ANALYSIS.md`, K3).
-- **Grid-Shortcuts ignorieren Modifikatortasten.** `Strg+V` markiert Fotos zum
-  Verschieben, `Strg+L` zum Löschen (`ANALYSIS.md`, M2).
-- **`writeIptcKeywordsToJpeg()` in `jpeg-segments.js` ist toter Code** – der
-  aktive Pfad ist `writeKeywordsToJpeg()`. Nicht versehentlich den falschen
-  patchen.
-- **Vorschaubilder werden nie freigegeben,** solange der Ordner offen bleibt.
-  Bei vielen im Leuchttisch besuchten Fotos wächst der Speicherverbrauch stetig.
 - **Der Zustand ist flüchtig.** Alle Markierungen und zugewiesenen Stichworte
   sind nach einem Reload weg. Beim Testen daran denken.
+- **Zielnamen werden gegen das Dateisystem geprüft, nicht nur gegen den
+  Speicher.** `ensureUniqueName()` ist deshalb `async` und braucht das
+  Ziel-Handle. Diese Prüfung ist der einzige Schutz davor, eine vorhandene Datei
+  zu überschreiben und danach die Quelle zu löschen – nicht wegoptimieren.
+- **`metadataEmbedded` entscheidet über die Metadaten-Prüfung.** Wurde auf die
+  Sidecar-Variante zurückgefallen, dürfen in der Zieldatei keine eingebetteten
+  Metadaten erwartet werden. `verifyMovedFile()` mit `null` statt der Stichworte
+  aufrufen, sonst schlägt der Fallback-Pfad zwangsläufig fehl.
+- **IPTC kürzt Stichworte auf 64 Byte, XMP nicht.** Wer den Round-Trip-Vergleich
+  anfasst, muss beide Erwartungswerte getrennt halten
+  (`expectedIptcKeywords` vs. `validExpected`).
+- **Tastenkürzel sind reine Einzeltasten.** Beide Keydown-Handler steigen bei
+  `ctrlKey`/`metaKey`/`altKey` aus (Ausnahme: Strg/Cmd+A). Neue Kürzel dahinter
+  einsortieren, sonst kapern sie Browser-Shortcuts.
+- **Große Vorschauen liegen in einem LRU-Cache** (`LARGE_PREVIEW_CACHE_SIZE`).
+  Wer `largePreviewUrl`/`fullResUrl` liest, ruft `touchLargePreview(entry)` auf –
+  sonst kann die gerade angezeigte Vorschau verdrängt werden.
+- **`escapeHtml()` maskiert auch Anführungszeichen** und ist damit für Attribute
+  geeignet. Diese Eigenschaft nicht wieder entfernen – zwei Aufrufstellen
+  (`renderContainerDetail`, `renderKeywordChips`) verlassen sich darauf.
+- **Importierte Einstellungen sind Fremddaten.** `normalizeKeywordCatalog()` und
+  `normalizePresets()` verwerfen alles, was nicht die erwartete Form hat. Neue
+  Felder dort mit aufnehmen.

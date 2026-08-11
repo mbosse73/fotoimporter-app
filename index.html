@@ -4,6 +4,10 @@
 <meta charset="UTF-8">
 <title>Foto-Importer</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- Als Data-URI eingebettet: die App soll ohne jede externe Ressource auskommen.
+     Ohne Favicon fragt der Browser /favicon.ico an und erzeugt bei jedem Start
+     einen 404 in der Konsole - genau das Rauschen, das echte Fehler verdeckt. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%235b9eff'/%3E%3Ccircle cx='16' cy='17' r='6.5' fill='none' stroke='%23fff' stroke-width='2.5'/%3E%3Cpath d='M11 8h10l1.5 3H9.5z' fill='%23fff'/%3E%3C/svg%3E">
 <style>
 :root{
   --bg-0:#15171c;
