@@ -75,7 +75,10 @@ function parseIrbs(buffer) {
     if (nameTotalLen % 2 !== 0) nameTotalLen += 1;
     p += nameTotalLen;
 
-    const size = (buffer[p] << 24) | (buffer[p + 1] << 16) | (buffer[p + 2] << 8) | buffer[p + 3];
+    // >>> 0: die Größe ist laut Format vorzeichenlos. Ohne diese Umwandlung würde
+    // ein gesetztes oberstes Bit eine negative Zahl ergeben und dataEnd vor
+    // dataStart liegen - slice() lieferte dann stillschweigend einen leeren Block.
+    const size = ((buffer[p] << 24) | (buffer[p + 1] << 16) | (buffer[p + 2] << 8) | buffer[p + 3]) >>> 0;
     p += 4;
 
     const dataStart = p;

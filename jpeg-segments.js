@@ -9,7 +9,6 @@
 
 const PHOTOSHOP_PREAMBLE = "Photoshop 3.0\0"; // exakt 14 Bytes, Standard-Präfix von Adobe
 const XMP_PREAMBLE = "http://ns.adobe.com/xap/1.0/\0"; // exakt 29 Bytes, Standard-Präfix für XMP in JPEG APP1
-const EXIF_PREAMBLE = "Exif\0\0"; // 6 Bytes - zur Abgrenzung, damit ein EXIF-APP1 nicht versehentlich als XMP missverstanden wird
 
 /**
  * Zerlegt ein JPEG in seine Segmente bis zum Start-of-Scan.
@@ -45,16 +44,18 @@ function parseJpegSegments(buffer) {
 }
 
 /**
- * Liest den ASCII-Text am Anfang eines APP13-Segment-Payloads (nach Marker+Länge).
- */
-/**
  * Liest exakt `length` Bytes ab `start` und wandelt sie 1:1 in einen String um
  * (ein Byte = ein Zeichencode, auch für Nullbytes - kein Abbruch bei 0x00).
  * Wichtig: ein Abbruch beim ersten Nullbyte (wie man es von C-Strings kennt)
  * würde bei Präfixen mit mehreren Nullbytes (z. B. "Exif\0\0") zu kurze und
  * damit nie passende Vergleichsstrings erzeugen.
+ *
+ * Liegt der angeforderte Bereich nicht vollständig im Puffer (Segment kürzer als
+ * die erwartete Präambel), wird "" zurückgegeben: buffer[i] wäre dort undefined
+ * und String.fromCharCode(undefined) ergäbe ein Zeichen, das zufällig passen könnte.
  */
 function readAsciiPrefix(buffer, start, length) {
+  if (start < 0 || start + length > buffer.length) return "";
   let str = "";
   for (let i = 0; i < length; i++) {
     str += String.fromCharCode(buffer[start + i]);
@@ -83,96 +84,6 @@ function buildApp13Segment(irbData) {
   return segment;
 }
 
-/**
- * Fügt IPTC-Stichworte in eine JPEG-Datei ein bzw. ersetzt vorhandene. Andere
- * Image Resource Blocks in einem bestehenden APP13 (z.B. Thumbnails, ICC-
- * Referenzen anderer Tools) bleiben erhalten - nur der IPTC-IRB (0x0404) wird
- * ausgetauscht. Alle übrigen JPEG-Segmente und die Bilddaten bleiben
- * byteidentisch zum Original.
- *
- * @param {Uint8Array} originalBuffer
- * @param {string[]} keywords
- * @param {{buildIptcIimBlock: Function, buildIrbForIptc: Function, parseIrbs: Function}} deps
- * @returns {Uint8Array}
- */
-function writeIptcKeywordsToJpeg(originalBuffer, keywords, deps) {
-  const { segments, scanStart } = parseJpegSegments(originalBuffer);
-  const newIptcBlock = deps.buildIptcIimBlock(keywords);
-  const newIptcIrb = deps.buildIrbForIptc(newIptcBlock);
-
-  // Existierendes APP13 mit Photoshop-Präambel suchen (kann höchstens sinnvoll eines geben;
-  // mehrere APP13-Segmente ohne Präambel-Fortsetzung werden hier bewusst nicht unterstützt,
-  // das ist ein seltener Sonderfall bei sehr großen IPTC-Datenmengen, siehe Exiv2-Bugtracker).
-  let existingApp13 = null;
-  for (const seg of segments) {
-    if (seg.marker !== 0xed) continue;
-    const payloadStart = seg.start + 4;
-    const prefix = readAsciiPrefix(originalBuffer, payloadStart, PHOTOSHOP_PREAMBLE.length);
-    if (prefix === PHOTOSHOP_PREAMBLE) {
-      existingApp13 = seg;
-      break;
-    }
-  }
-
-  let newIrbChainBytes;
-  if (existingApp13) {
-    const payloadStart = existingApp13.start + 4 + PHOTOSHOP_PREAMBLE.length;
-    const irbBuffer = originalBuffer.slice(payloadStart, existingApp13.end);
-    const existingIrbs = deps.parseIrbs(irbBuffer);
-
-    // Alle bestehenden IRBs behalten AUSSER dem alten IPTC-IRB, dann das neue IPTC-IRB anhängen.
-    const keptChunks = [];
-    for (const irb of existingIrbs) {
-      if (irb.resourceId === 0x0404) continue; // altes IPTC wird durch das neue ersetzt
-      keptChunks.push(irbBuffer.slice(irb.start, irb.end));
-    }
-    keptChunks.push(newIptcIrb);
-
-    const totalLen = keptChunks.reduce((sum, c) => sum + c.length, 0);
-    newIrbChainBytes = new Uint8Array(totalLen);
-    let off = 0;
-    for (const c of keptChunks) { newIrbChainBytes.set(c, off); off += c.length; }
-  } else {
-    newIrbChainBytes = newIptcIrb;
-  }
-
-  const newApp13Segment = buildApp13Segment(newIrbChainBytes);
-
-  // Neues JPEG zusammensetzen: alles vor dem (ggf. vorhandenen) APP13 unverändert,
-  // dann das neue APP13, dann alles danach unverändert bis zu den Bilddaten (inkl.).
-  let headPart, tailStart;
-  if (existingApp13) {
-    headPart = originalBuffer.slice(0, existingApp13.start);
-    tailStart = existingApp13.end;
-  } else {
-    // Kein bestehendes APP13 - direkt nach dem SOI-Marker (erste 2 Bytes) einfügen,
-    // das ist die von der JPEG-Spezifikation empfohlene früheste sinnvolle Position
-    // für APPn-Segmente (nach SOI, vor allen anderen APPn falls vorhanden ist auch ok,
-    // hier fügen wir am Anfang der Segmentkette ein für maximale Kompatibilität).
-    headPart = originalBuffer.slice(0, 2);
-    tailStart = 2;
-  }
-  const tailPart = originalBuffer.slice(tailStart); // enthält auch alle Bilddaten bis zum Ende der Datei
-
-  const result = new Uint8Array(headPart.length + newApp13Segment.length + tailPart.length);
-  result.set(headPart, 0);
-  result.set(newApp13Segment, headPart.length);
-  result.set(tailPart, headPart.length + newApp13Segment.length);
-  return result;
-}
-
-/**
- * Schreibt sowohl IPTC-IIM- als auch XMP-Metadaten in eine JPEG-Datei, in einem
- * einzigen Durchgang. Bestehende EXIF- (APP1 "Exif\0\0"), ICC- (APP2) und alle
- * anderen Segmente bleiben unangetastet; ein bestehendes XMP-APP1 oder
- * IPTC-APP13 wird ersetzt, andere Image Resource Blocks in einem bestehenden
- * APP13 (z.B. Thumbnails) bleiben erhalten.
- *
- * @param {Uint8Array} originalBuffer
- * @param {string[]} keywords
- * @param {{buildIptcIimBlock: Function, buildIrbForIptc: Function, parseIrbs: Function, buildXmpPacket: Function}} deps
- * @returns {Uint8Array}
- */
 /**
  * Schreibt sowohl IPTC-IIM- als auch XMP-Metadaten (Stichworte UND optional
  * eine Beschreibung) in eine JPEG-Datei, in einem einzigen Durchgang.
@@ -306,10 +217,8 @@ if (typeof module !== "undefined") {
     parseJpegSegments,
     buildApp13Segment,
     buildApp1XmpSegment,
-    writeIptcKeywordsToJpeg,
     writeKeywordsToJpeg,
     PHOTOSHOP_PREAMBLE,
     XMP_PREAMBLE,
-    EXIF_PREAMBLE,
   };
 }

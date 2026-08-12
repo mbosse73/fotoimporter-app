@@ -17,9 +17,12 @@ Ein browserbasiertes Programm zum Importieren, Organisieren und Verschlagworten 
 11. [Die Lupe](#die-lupe)
 12. [Namensschema beim Verschieben](#namensschema-beim-verschieben)
 13. [Metadaten in den Dateien (IPTC/XMP)](#metadaten-in-den-dateien-iptcxmp)
-14. [Sicherheit beim Verschieben](#sicherheit-beim-verschieben)
-15. [Programmeinstellungen: Export/Import](#programmeinstellungen-exportimport)
-16. [Alle Tastenkürzel im Überblick](#alle-tastenkürzel-im-überblick)
+14. [Vorschau des Durchgangs](#vorschau-des-durchgangs)
+15. [Sicherheit beim Verschieben](#sicherheit-beim-verschieben)
+16. [Protokoll und Rückgängig](#protokoll-und-rückgängig)
+17. [Unterbrochene Sichtung fortsetzen](#unterbrochene-sichtung-fortsetzen)
+18. [Programmeinstellungen: Export/Import](#programmeinstellungen-exportimport)
+19. [Alle Tastenkürzel im Überblick](#alle-tastenkürzel-im-überblick)
 
 ---
 
@@ -35,9 +38,11 @@ Es ist keine Installation nötig – `index.html` wird direkt im Browser geöffn
 2. **Zielverzeichnis wählen**: Button „🎯 Zielverzeichnis wählen“ – wird erst benötigt, wenn tatsächlich Fotos verschoben werden sollen.
 3. Alle unterstützten Bildformate im Quellordner werden als Vorschau-Kacheln im Grid angezeigt, sortiert nach Aufnahmedatum (änderbar, siehe [Sortierung](#sortierung-und-filterung)).
 
-Es werden nur Dateien **direkt im gewählten Ordner** gelesen, keine Unterordner.
+Standardmäßig werden nur Dateien **direkt im gewählten Ordner** gelesen. Der Schalter **Unterordner** neben dem Ordnernamen bezieht auch alle Unterordner ein; versteckte Ordner (Name beginnt mit einem Punkt) bleiben dabei außen vor, dort liegen auf Speicherkarten üblicherweise nur Papierkorb- und Indexdaten des Systems. Bei eingeschaltetem Schalter zeigt jede Kachel zusätzlich den Unterordner an, damit gleichnamige Dateien unterscheidbar bleiben.
 
-Der Programmzustand wird **nicht** über einen Seitenneustart hinweg gespeichert (mit Ausnahme des Stichwortkatalogs und der Namensschema-Voreinstellungen, siehe unten) – nach einem Neuladen der Seite muss der Ordner erneut geöffnet werden.
+Das Quellverzeichnis wird mit Schreibrechten geöffnet, weil beim Verschieben und Löschen Dateien daraus entfernt werden.
+
+Markierungen und zugewiesene Stichworte überstehen ein Neuladen der Seite – siehe [Unterbrochene Sichtung fortsetzen](#unterbrochene-sichtung-fortsetzen). Der Stichwortkatalog und die Namensschema-Voreinstellungen werden ohnehin dauerhaft gespeichert.
 
 ## Die Gridansicht
 
@@ -45,10 +50,13 @@ Jede Kachel zeigt eine Bildvorschau, den Dateinamen sowie optische Hinweise auf:
 
 - **Zugewiesene Aktion**: farbiger Rahmen und Beschriftung (grün = Verschieben, rot = Löschen)
 - **Zugewiesene Stichworte**: kleine Chips am unteren Rand der Kachel (bis zu 3 sichtbar, „+N“ bei mehr) sowie ein 🏷-Symbol
+- **Im Foto vorhandene, noch nicht übernommene Stichworte**: ein gestrichelter Chip „📄 N“ (siehe [Stichworte zuweisen](#stichworte-zuweisen))
 - **Aktueller Cursor**: gelb hervorgehobener Rahmen
 - **Mehrfachauswahl**: blau hervorgehobene Kacheln
 
 Navigation erfolgt mit den **Pfeiltasten**. `Shift`+Pfeiltaste erweitert die Auswahl über einen Bereich. Mit der Maus: Klick wählt aus, `Strg`/`Cmd`+Klick fügt einzelne Kacheln zur Auswahl hinzu, `Shift`+Klick wählt einen Bereich.
+
+Auch **RAW-Dateien** zeigen eine Vorschau. Der Browser kann RAW nicht selbst darstellen; das Programm schneidet stattdessen das JPEG-Vorschaubild heraus, das praktisch jede Kamera mit in die Datei legt. Findet sich keines, bleibt es bei einem grauen Kasten mit dem Formatkürzel.
 
 ## Aktionen: Verschieben und Löschen
 
@@ -60,7 +68,11 @@ Jedem Foto kann eine von drei Aktionen zugewiesen werden:
 
 Diese Tasten wirken auf das aktuell angesteuerte Foto oder, falls eine Mehrfachauswahl aktiv ist, auf alle ausgewählten Fotos gleichzeitig.
 
-Der Button „**Aktionen ausführen ▶**“ oben rechts führt alle gesetzten Aktionen aus. Ist mindestens ein Foto zum Verschieben markiert, fragt das Programm zuvor nach einer Ereignisbeschreibung (siehe [Namensschema](#namensschema-beim-verschieben)).
+Der Button „**Aktionen ausführen ▶**“ oben rechts startet den Durchgang. Ist mindestens ein Foto zum Verschieben markiert, fragt das Programm zuvor nach einer Ereignisbeschreibung (siehe [Namensschema](#namensschema-beim-verschieben)).
+
+Anschließend erscheint in jedem Fall die [Vorschau des Durchgangs](#vorschau-des-durchgangs): sie zeigt jede einzelne geplante Änderung, bevor irgendetwas geschieht. Gelöschte Dateien landen **nicht im Papierkorb** und lassen sich nicht wiederherstellen.
+
+Die Tastenkürzel wirken nur als einzelne Tasten. `Strg`/`Cmd` in Kombination (z. B. `Strg`+`V` zum Einfügen) bleibt dem Browser überlassen und löst keine Aktion im Programm aus – einzige Ausnahme ist `Strg`/`Cmd`+`A` für „alles auswählen“.
 
 ## Sortierung und Filterung
 
@@ -101,6 +113,14 @@ Bei einer Mehrfachauswahl mit gemischtem Zustand (manche Fotos haben das Stichwo
 
 Im Leuchttisch steht dieselbe Zuweisungsfunktion über ein Seitenpanel zur Verfügung (siehe unten).
 
+### Bereits im Foto vorhandene Stichworte
+
+Fotos, die schon einmal verschlagwortet wurden, bringen ihre Stichworte in den IPTC/XMP-Metadaten mit. Das Programm liest sie beim Einlesen mit und zeigt sie im Zuweisungs-Panel und im Seitenpanel des Leuchttischs unter **„Im Foto gefundene Stichworte“** an – als gestrichelte Chips, weil sie noch nicht zugewiesen sind.
+
+Ein Klick übernimmt ein Stichwort (ein weiterer Klick nimmt die Übernahme zurück), „Alle übernehmen“ übernimmt sie auf einmal. Bei einer Mehrfachauswahl steht an jedem Chip, auf wie vielen der ausgewählten Fotos das Stichwort vorkommt.
+
+Übernommen wird **nichts von selbst**: was in der Datei steht, ist eine Aussage des Programms, das sie zuletzt beschrieben hat. Erst die Übernahme macht daraus eine eigene Zuweisung – und nur zugewiesene Stichworte werden beim Verschieben in die Zieldatei geschrieben.
+
 ## Der Leuchttisch
 
 `Enter` öffnet den Leuchttisch für das aktuell angesteuerte Foto. Er zeigt das Foto möglichst groß, mit:
@@ -137,12 +157,27 @@ Nur im Leuchttisch: Taste `M` blendet eine runde Lupe ein, die dem Mauszeiger fo
 Über „⚙️ Namensschema…“ lässt sich der Ziel-Dateiname aus Bausteinen zusammensetzen, per Drag & Drop in beliebiger Reihenfolge:
 
 - **Datum** (JJJJMMTT, Aufnahmedatum)
-- **Ereignis** (die beim Verschieben abgefragte Beschreibung, Leerzeichen werden zu Unterstrichen)
+- **Ereignis** (die beim Verschieben abgefragte Beschreibung, Leerzeichen werden zu Unterstrichen, in Dateinamen unzulässige Zeichen wie `/ \ : * ? " < > |` zu Bindestrichen)
 - **Zähler** (Startwert und Stellenzahl einstellbar)
 - **Freitext** (fest hinterlegter Text)
 - **Trenner** (Unterstrich oder Bindestrich)
 
-Schemata lassen sich als benannte Voreinstellung speichern und später wieder laden.
+### Unterordner im Zielverzeichnis
+
+Statt alle Fotos in einen Ordner zu legen, kann das Zielverzeichnis gegliedert werden. Die Auswahl steht im selben Dialog:
+
+| Einstellung | Ergebnis |
+|---|---|
+| Kein Unterordner | alles direkt ins Zielverzeichnis |
+| Jahr | `2026/` |
+| Jahr / Jahr-Monat | `2026/2026-08/` |
+| Jahr / Jahr-Monat / Jahr-Monat-Tag | `2026/2026-08/2026-08-12/` |
+| Ereignis | `Sommerurlaub/` |
+| Jahr / Ereignis | `2026/Sommerurlaub/` |
+
+Maßgeblich ist das **Aufnahmedatum** des jeweiligen Fotos, nicht das Datum des Durchgangs. Fehlende Ordner werden angelegt. Ordnernamen werden genauso bereinigt wie Dateinamen; ein Schrägstrich im Ereignistext erzeugt also keine zusätzliche Ebene.
+
+Schemata und die Unterordner-Einstellung lassen sich zusammen als benannte Voreinstellung speichern und später wieder laden.
 
 Beim Ausführen der Verschieben-Aktion (sofern mindestens ein Foto markiert ist) fragt das Programm nach einer Ereignisbeschreibung, die sowohl in den Dateinamen einfließt als auch – unverändert, mit Leerzeichen statt Unterstrichen – als Beschreibung in die Metadaten der Datei geschrieben wird.
 
@@ -155,15 +190,65 @@ Beim Verschieben werden zugewiesene Stichworte und die Ereignisbeschreibung nach
 
 Schlägt das direkte Schreiben in eine JPEG-Datei aus irgendeinem Grund fehl oder liefert die Prüfung ein unerwartetes Ergebnis, greift automatisch der sichere Rückfall auf die unveränderte Originaldatei plus Sidecar – es wird nie eine unvollständig beschriebene Datei verwendet.
 
+## Vorschau des Durchgangs
+
+Bevor irgendetwas geschieht, zeigt das Programm den vollständigen Durchgang: **Quellname → Zielordner/Zielname** für jede zu verschiebende Datei und darunter jede Datei, die gelöscht werden soll. Erst „**Jetzt ausführen ▶**“ startet den Durchgang; „Abbrechen“ lässt alles unverändert.
+
+Über der Liste stehen die Punkte, die man vorher wissen will:
+
+- wie viele Dateien **endgültig gelöscht** werden (ohne Papierkorb),
+- wie viele **Zielnamen bereits belegt** sind und deshalb ein Suffix `_1`, `_2` … bekommen (diese Zeilen sind in der Liste gelb hervorgehoben),
+- in wie viele **Unterordner** einsortiert wird und dass fehlende davon angelegt werden.
+
+Die Vorschau **verändert nichts**: sie legt keine Ordner an, schreibt keine Datei und löscht nichts. Sie wird mit denselben Funktionen berechnet, die anschließend auch ausführen – die angezeigten Namen sind also nicht geschätzt, sondern dieselben, die entstehen werden.
+
+Die Dateinamen ermittelt der Durchgang trotzdem noch einmal neu. Käme zwischen Anzeige und Ausführung eine gleichnamige Datei ins Zielverzeichnis, wäre die Prüfung unmittelbar vor dem Schreiben der einzige Schutz davor, sie zu überschreiben.
+
 ## Sicherheit beim Verschieben
+
+Es wird **nie eine vorhandene Datei im Zielverzeichnis überschrieben**. Vor dem Schreiben prüft das Programm, ob der geplante Name dort (oder als zugehörige `.xmp`-Datei) bereits vergeben ist, und weicht andernfalls auf `name_1`, `name_2` usw. aus. Das gilt auch über mehrere Durchgänge und Programmstarts hinweg.
 
 Nach dem Schreiben der Zieldatei prüft das Programm aktiv, **bevor** die Quelldatei gelöscht wird:
 
 1. **Größe** der neu geschriebenen Zieldatei
 2. **Prüfsumme der Bilddaten** (SHA-256) – bei JPEG wird nur der garantiert unveränderte Bildanteil verglichen, bei anderen Formaten die komplette Datei
-3. **Metadaten** (Stichworte/Beschreibung), sofern welche geschrieben wurden
+3. **Metadaten** (Stichworte/Beschreibung), sofern sie in die Datei eingebettet wurden
+4. **XMP-Sidecar-Datei**, sofern eine geschrieben wurde – sie wird ebenfalls zurückgelesen und verglichen, denn für Formate ohne Direkteinbettung ist sie die einzige Ablage der Metadaten
 
 Schlägt eine dieser Prüfungen fehl, wird die Quelldatei **nicht gelöscht**, das Foto bleibt im Grid sichtbar (mit zurückgesetzter Aktion), und eine Meldung weist auf die betroffene Datei hin. Die möglicherweise unvollständige Zieldatei wird bewusst nicht automatisch entfernt, damit sie manuell geprüft werden kann.
+
+## Protokoll und Rückgängig
+
+### Protokolldatei
+
+Jeder Durchgang wird im Zielverzeichnis in der Datei `foto-importer-protokoll.txt` festgehalten: Zeitpunkt, Quell- und Zielordner, jede Verschiebung mit Quell- und Zielnamen sowie jede Löschung. Neue Durchgänge werden angehängt, nichts wird ersetzt.
+
+Für gelöschte Dateien ist diese Datei das Einzige, was bleibt – wiederherstellen lassen sie sich nicht. Zu wissen, *was* gelöscht wurde, ist dann immer noch besser als nichts.
+
+Lässt sich die Protokolldatei nicht schreiben, gilt der Durchgang trotzdem als gelungen: die Fotos liegen bereits richtig. Es erscheint nur ein Hinweis.
+
+### Rückgängig
+
+Nach einem Durchgang mit Verschiebungen erscheint in der Toolbar der Button „**↩ N zurück**“. Er bewegt die verschobenen Dateien an ihren Ursprungsort zurück und nimmt die Fotos wieder in die Liste auf, samt zugewiesener Stichworte.
+
+Grenzen, die man kennen sollte:
+
+- Es geht nur um den **letzten** Durchgang und nur **innerhalb derselben Sitzung** – nach einem Neuladen der Seite steht der Button nicht mehr zur Verfügung.
+- **Gelöschte Dateien sind davon nicht erfasst.** Sie sind endgültig weg.
+- Liegt im Quellordner inzwischen eine Datei gleichen Namens, wird auf `name_1` ausgewichen.
+
+Das Zurückbewegen folgt derselben Reihenfolge wie das Verschieben: schreiben, prüfen, erst danach die Datei im Zielverzeichnis löschen. Schlägt die Prüfung fehl, bleibt die Datei im Zielverzeichnis liegen – im schlechtesten Fall existiert sie dann zweimal, was besser ist als keinmal.
+
+## Unterbrochene Sichtung fortsetzen
+
+Markierungen und zugewiesene Stichworte werden laufend gesichert. Wird die Seite neu geladen oder der Browser geschlossen, erscheint beim nächsten Start ein Balken über dem Grid: **„Unterbrochene Sichtung vom … fortsetzen“**.
+
+- **Sitzung fortsetzen** fragt die Zugriffsrechte für den Ordner erneut ab (der Browser verlangt das nach einem Neustart immer), liest das Quellverzeichnis frisch ein und überträgt die gesicherten Markierungen auf die Fotos, die noch da sind.
+- **Verwerfen** löscht den gesicherten Stand.
+
+Fotos, die inzwischen nicht mehr im Ordner liegen, werden gemeldet und übersprungen – ihre Markierung wandert nicht auf eine andere Datei. War auch ein Zielverzeichnis gewählt und gilt dessen Berechtigung noch, wird es mit übernommen.
+
+Gesichert wird nur, was sich nicht wieder einlesen lässt: die beiden Ordner sowie je Foto Pfad, Name, Markierung und Stichworte. Keine Bilddaten, keine Vorschauen.
 
 ## Programmeinstellungen: Export/Import
 

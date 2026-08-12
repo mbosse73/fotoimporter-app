@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>Foto-Importer – Browser-Tests</title>
+<style>
+:root{
+  --bg-0:#15171c; --bg-1:#1c1f26; --bg-2:#252932; --line:#3a4048;
+  --text-0:#eef0f3; --text-1:#a6acb8; --text-2:#6b7280;
+  --ok:#3ba86b; --fehl:#e0555f; --accent:#5b9eff;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg-0);color:var(--text-0);padding:24px;line-height:1.5;}
+h1{font-size:20px;margin:0 0 4px;}
+.hinweis{color:var(--text-1);font-size:13px;margin:0 0 20px;max-width:70ch;}
+.hinweis code{background:var(--bg-2);padding:1px 5px;border-radius:4px;font-size:12px;}
+#zusammenfassung{font-size:16px;font-weight:600;padding:12px 16px;border-radius:6px;
+  background:var(--bg-1);border:1px solid var(--line);margin-bottom:18px;display:inline-block;}
+#zusammenfassung.ok{border-color:var(--ok);color:var(--ok);}
+#zusammenfassung.fehl{border-color:var(--fehl);color:var(--fehl);}
+.bereich{margin:0 0 6px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--text-2);padding-top:14px;}
+.zeile{display:flex;gap:10px;align-items:baseline;padding:5px 10px;border-radius:4px;font-size:14px;}
+.zeile:nth-child(odd){background:var(--bg-1);}
+.zeile.fehl{background:#4a2529;}
+.marke{flex:0 0 auto;font-weight:700;font-size:12px;width:52px;}
+.zeile.ok .marke{color:var(--ok);}
+.zeile.fehl .marke{color:var(--fehl);}
+.detail{color:var(--text-2);font-size:12px;margin-left:auto;text-align:right;
+  max-width:45%;white-space:pre-wrap;word-break:break-word;}
+#buehne{position:absolute;width:1280px;height:900px;left:-3000px;top:0;border:0;}
+</style>
+</head>
+<body>
+
+<h1>Foto-Importer – Browser-Tests</h1>
+<p class="hinweis">
+  Prüft die Anwendungslogik aus <code>app.js</code> gegen die geladene App. Die
+  Verzeichnis-Handles sind Attrappen – es wird <b>keine echte Datei</b> gelesen,
+  geschrieben oder gelöscht. Die Seite muss über einen Webserver geöffnet werden
+  (<code>python3 -m http.server 8000</code>, dann
+  <code>http://localhost:8000/tests/browser.html</code>); über <code>file://</code>
+  verweigert der Browser den Zugriff auf das eingebettete Fenster.
+</p>
+
+<div id="zusammenfassung">Tests laufen…</div>
+<div id="ergebnisse"></div>
+
+<iframe id="buehne" src="../index.html"></iframe>
+
+<script>
+const zusammenfassung = document.getElementById("zusammenfassung");
+const ergebnisseEl = document.getElementById("ergebnisse");
+const buehne = document.getElementById("buehne");
+
+let fertig = false;
+
+function zeigeErgebnisse(ergebnisse) {
+  fertig = true;
+  const fehlgeschlagen = ergebnisse.filter((e) => !e.bestanden);
+
+  zusammenfassung.textContent = fehlgeschlagen.length === 0
+    ? `Alle ${ergebnisse.length} Prüfungen bestanden`
+    : `${fehlgeschlagen.length} von ${ergebnisse.length} Prüfungen fehlgeschlagen`;
+  zusammenfassung.className = fehlgeschlagen.length === 0 ? "ok" : "fehl";
+
+  let letzterBereich = null;
+  for (const e of ergebnisse) {
+    if (e.bereich !== letzterBereich) {
+      const kopf = document.createElement("div");
+      kopf.className = "bereich";
+      kopf.textContent = e.bereich;
+      ergebnisseEl.appendChild(kopf);
+      letzterBereich = e.bereich;
+    }
+    const zeile = document.createElement("div");
+    zeile.className = "zeile " + (e.bestanden ? "ok" : "fehl");
+
+    const marke = document.createElement("span");
+    marke.className = "marke";
+    marke.textContent = e.bestanden ? "OK" : "FEHLER";
+    zeile.appendChild(marke);
+
+    const name = document.createElement("span");
+    name.textContent = e.name;
+    zeile.appendChild(name);
+
+    if (e.detail) {
+      const detail = document.createElement("span");
+      detail.className = "detail";
+      detail.textContent = e.detail;
+      zeile.appendChild(detail);
+    }
+    ergebnisseEl.appendChild(zeile);
+  }
+
+  // Ergebnis maschinenlesbar bereitstellen (tests/run-browser.js liest das aus).
+  window.__fotoImporterTestErgebnis = {
+    gesamt: ergebnisse.length,
+    fehlgeschlagen: fehlgeschlagen.length,
+    ergebnisse,
+  };
+}
+
+window.addEventListener("message", (ev) => {
+  if (!ev.data || ev.data.typ !== "fotoImporterTestErgebnis") return;
+  zeigeErgebnisse(ev.data.ergebnisse);
+});
+
+buehne.addEventListener("load", () => {
+  // Die Testsuite wird IN das Fenster der App injiziert. Nur so sieht sie deren
+  // Top-Level-const/let (state, currentFormatTokens, ...), die nicht am window hängen.
+  try {
+    const dok = buehne.contentDocument;
+    const skript = dok.createElement("script");
+    skript.src = "tests/browser-suite.js";
+    dok.body.appendChild(skript);
+  } catch (e) {
+    zeigeErgebnisse([{
+      bereich: "Testlauf",
+      name: "Zugriff auf das eingebettete Fenster nicht möglich",
+      bestanden: false,
+      detail: e.message + " – die Seite muss über http:// geöffnet werden, nicht über file://.",
+    }]);
+  }
+});
+
+setTimeout(() => {
+  if (fertig) return;
+  zeigeErgebnisse([{
+    bereich: "Testlauf",
+    name: "Zeitüberschreitung – kein Ergebnis erhalten",
+    bestanden: false,
+    detail: "Konsole des eingebetteten Fensters prüfen.",
+  }]);
+}, 30000);
+</script>
+
+</body>
+</html>

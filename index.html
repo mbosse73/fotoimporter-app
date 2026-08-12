@@ -4,6 +4,10 @@
 <meta charset="UTF-8">
 <title>Foto-Importer</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- Als Data-URI eingebettet: die App soll ohne jede externe Ressource auskommen.
+     Ohne Favicon fragt der Browser /favicon.ico an und erzeugt bei jedem Start
+     einen 404 in der Konsole - genau das Rauschen, das echte Fehler verdeckt. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%235b9eff'/%3E%3Ccircle cx='16' cy='17' r='6.5' fill='none' stroke='%23fff' stroke-width='2.5'/%3E%3Cpath d='M11 8h10l1.5 3H9.5z' fill='%23fff'/%3E%3C/svg%3E">
 <style>
 :root{
   --bg-0:#15171c;
@@ -64,6 +68,14 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
 #toolbar .path-label{font-size:12px;color:var(--text-2);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 #toolbar .path-value{font-size:12px;color:var(--text-1);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 #toolbar .spacer{flex:1;}
+#resumeBanner{
+  display:flex;align-items:center;gap:10px;padding:9px 14px;font-size:13px;
+  background:var(--accent-dim);border-bottom:1px solid var(--accent);
+}
+#resumeBanner button{flex:none;}
+#resumeBannerText{flex:1;}
+#toolbar .toolbarCheck{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-2);cursor:pointer;white-space:nowrap;}
+#toolbar .toolbarCheck input{margin:0;cursor:pointer;}
 #statusText{font-size:12px;color:var(--text-2);}
 
 /* ---------- Grid ---------- */
@@ -133,6 +145,9 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
   max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
 .miniKwChipMore{background:rgba(91,158,255,.35);border-color:var(--accent);font-weight:700;}
+/* Noch nicht übernommene Stichworte aus der Datei – gestrichelt und unbunt,
+   damit sie sich klar von tatsächlich zugewiesenen unterscheiden. */
+.miniKwChipExisting{background:transparent;border-style:dashed;color:var(--text-2);}
 
 #emptyState{
   color:var(--text-2);text-align:center;padding:60px 20px;font-size:14px;
@@ -540,7 +555,8 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
 #helpContent h3{font-size:17px;margin:0 0 14px;color:var(--text-0);}
 #helpContent h4{font-size:13.5px;margin:20px 0 8px;color:var(--text-1);text-transform:uppercase;letter-spacing:.03em;}
 #helpContent p{margin:0 0 12px;color:var(--text-1);}
-#helpContent ul{margin:0 0 12px;padding-left:20px;color:var(--text-1);}
+#helpContent ul,#helpContent ol{margin:0 0 12px;padding-left:20px;color:var(--text-1);}
+#helpContent a{color:var(--accent);}
 #helpContent li{margin-bottom:5px;}
 #helpContent kbd{
   background:var(--bg-3);border:1px solid var(--line);border-radius:4px;padding:1px 7px;
@@ -615,6 +631,29 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
 }
 .assignContainerChip.assigned{background:var(--accent-dim);border-color:var(--accent);}
 .assignContainerChip .chipCount{color:var(--text-2);font-size:10.5px;}
+/* Im Foto gefundene Stichworte: gestrichelter Rand als Hinweis, dass sie noch
+   nicht zugewiesen sind, sondern nur zur Übernahme angeboten werden. */
+.existingKeywordChip{border-style:dashed;}
+.existingKeywordChip.assigned{border-style:solid;}
+
+/* Trockenlauf: die Liste kann hunderte Zeilen haben – eigener Scrollbereich,
+   damit der Ausführen-Knopf immer sichtbar bleibt. */
+#dryRunModal{max-width:820px;}
+.dryRunList{max-height:230px;overflow-y:auto;border:1px solid var(--line);border-radius:6px;}
+.dryRunRow{display:flex;align-items:center;gap:8px;padding:5px 9px;font-size:12.5px;border-bottom:1px solid var(--line);}
+.dryRunRow:last-child{border-bottom:none;}
+.dryRunFrom{flex:1;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.dryRunArrow{color:var(--text-2);flex:none;}
+.dryRunTo{flex:1;color:var(--text-0);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.dryRunTo .dryRunDir{color:var(--accent);}
+.dryRunRow.evaded .dryRunTo{color:#ffcc66;}
+.dryRunRow.deleteRow .dryRunFrom{color:var(--text-0);}
+.dryRunMore{padding:6px 9px;font-size:12px;color:var(--text-2);}
+.dryRunWarning{
+  padding:8px 10px;margin-bottom:10px;border-radius:6px;font-size:12.5px;
+  background:rgba(255,120,90,.12);border:1px solid rgba(255,120,90,.5);
+}
+.dryRunWarning.mild{background:rgba(255,204,102,.10);border-color:rgba(255,204,102,.45);}
 
 .assignKeywordResults{max-height:180px;overflow-y:auto;margin-top:8px;}
 .assignKeywordItem{
@@ -636,6 +675,9 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
     <div class="group">
       <button id="btnOpenSource">📂 Quellverzeichnis öffnen</button>
       <span class="path-value" id="sourcePathLabel">kein Ordner gewählt</span>
+      <label class="toolbarCheck" title="Auch Fotos in Unterordnern des Quellverzeichnisses einlesen">
+        <input type="checkbox" id="includeSubfolders"> Unterordner
+      </label>
     </div>
     <div class="sep"></div>
     <div class="group">
@@ -672,7 +714,15 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
     <div class="spacer"></div>
     <span id="statusText"></span>
     <div class="sep"></div>
+    <button id="btnUndoLastRun" class="hidden" type="button">↩ zurück</button>
     <button id="btnRunActions" class="primary" disabled>Aktionen ausführen ▶</button>
+  </div>
+
+  <!-- ============ ANGEBOT: LETZTE SITZUNG FORTSETZEN ============ -->
+  <div id="resumeBanner" class="hidden">
+    <span id="resumeBannerText"></span>
+    <button id="btnResumeSession" class="primary" type="button">Sitzung fortsetzen</button>
+    <button id="btnDiscardSession" type="button">Verwerfen</button>
   </div>
 
   <!-- ============ GRID ============ -->
@@ -730,6 +780,10 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
       <div class="lbPanelSection">
         <div class="lbPanelTitle">Zugewiesene Stichworte</div>
         <div id="lbAssignedChips" class="lbAssignedChips"></div>
+      </div>
+      <div class="lbPanelSection hidden" id="lbExistingSection">
+        <div class="lbPanelTitle">Im Foto gefundene Stichworte</div>
+        <div id="lbExistingRow" class="assignChipRow"></div>
       </div>
       <div class="lbPanelSection">
         <div class="lbPanelTitle">Favoriten (Taste 1–9)</div>
@@ -790,6 +844,11 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
     <div class="field">
       <label>Freitext (falls Baustein "Freitext" verwendet wird)</label>
       <input type="text" id="freeText" placeholder="z. B. Urlaub">
+    </div>
+
+    <div class="field">
+      <label>Unterordner im Zielverzeichnis</label>
+      <select id="subfolderMode"></select>
     </div>
 
     <div id="formatPreview"></div>
@@ -914,6 +973,11 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
     <h2>🏷️ Stichworte zuweisen</h2>
     <div class="subtitle" id="keywordAssignTargetInfo"></div>
 
+    <div class="assignSection hidden" id="assignExistingSection">
+      <div class="assignSectionTitle">Im Foto gefundene Stichworte</div>
+      <div class="assignChipRow" id="assignExistingRow"></div>
+    </div>
+
     <div class="assignSection">
       <div class="assignSectionTitle">Favoriten (Taste 1–9)</div>
       <div class="assignFavoritesRow" id="assignFavoritesRow"></div>
@@ -970,7 +1034,34 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
     <div id="eventPreview" class="modal .subtitle" style="font-size:12px;color:var(--text-2);"></div>
     <div class="actions">
       <button id="btnEventCancel">Abbrechen</button>
-      <button id="btnEventOk" class="primary">OK – Aktionen ausführen</button>
+      <button id="btnEventOk" class="primary">Weiter – Vorschau anzeigen</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL: Trockenlauf / Vorschau des Durchgangs ============ -->
+<div class="modalOverlay hidden" id="dryRunOverlay">
+  <div class="modal" id="dryRunModal">
+    <h2>Vorschau des Durchgangs</h2>
+    <div class="subtitle">Nichts davon ist bisher geschehen. Erst „Jetzt ausführen“ startet den Durchgang.</div>
+
+    <div id="dryRunWarnings"></div>
+
+    <div class="assignSection" id="dryRunMoveSection">
+      <div class="assignSectionTitle">Wird verschoben (<span id="dryRunMoveCount">0</span>)</div>
+      <div class="dryRunList" id="dryRunMoveList"></div>
+    </div>
+
+    <div class="assignSection" id="dryRunDeleteSection">
+      <div class="assignSectionTitle">Wird endgültig gelöscht (<span id="dryRunDeleteCount">0</span>)</div>
+      <div class="dryRunList" id="dryRunDeleteList"></div>
+    </div>
+
+    <div class="actions">
+      <div class="left">
+        <button id="btnDryRunCancel">Abbrechen</button>
+      </div>
+      <button id="btnDryRunExecute" class="primary">Jetzt ausführen ▶</button>
     </div>
   </div>
 </div>
@@ -993,6 +1084,24 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
 <script src="photoshop-irb.js"></script>
 <script src="xmp-packet.js"></script>
 <script src="jpeg-segments.js"></script>
-<script src="app.js"></script>
+<script src="raw-preview.js"></script>
+<script src="session-store.js"></script>
+<!-- Erzeugt aus HANDBUCH.md, siehe tools/sync-help.js -->
+<script src="help-content.js"></script>
+
+<!-- Anwendung. Die Reihenfolge ist relevant: alle Dateien teilen sich einen
+     globalen Scope, und Top-Level-Code einer Datei sieht nur, was zuvor
+     geladen wurde. Siehe CLAUDE.md. -->
+<script src="state.js"></script>
+<script src="source.js"></script>
+<script src="metadata.js"></script>
+<script src="thumbnails.js"></script>
+<script src="grid.js"></script>
+<script src="keywords.js"></script>
+<script src="lightbox.js"></script>
+<script src="naming.js"></script>
+<script src="execute.js"></script>
+<script src="catalog.js"></script>
+<script src="overlays.js"></script>
 </body>
 </html>

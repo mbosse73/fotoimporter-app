@@ -125,23 +125,11 @@ function parseIptcIimData(block) {
   return { keywords, description };
 }
 
-/**
- * Kompatibilitäts-Wrapper: liefert nur die Stichwörter (wie die frühere, engere
- * Funktion). Neuer Code sollte parseIptcIimData() verwenden, wenn auch die
- * Beschreibung gebraucht wird.
- * @param {Uint8Array} block
- * @returns {string[]}
- */
-function parseIptcIimKeywords(block) {
-  return parseIptcIimData(block).keywords;
-}
-
 if (typeof module !== "undefined") {
   module.exports = {
     encodeDataSet,
     truncateUtf8,
     buildIptcIimBlock,
-    parseIptcIimKeywords,
     parseIptcIimData,
     MAX_KEYWORD_BYTES,
     MAX_CAPTION_BYTES,
