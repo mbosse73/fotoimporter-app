@@ -493,11 +493,14 @@ nicht der Fall. Für alle Formate ohne Direkteinbettung ist sie die einzige
 Ablage der Metadaten. Neu ist deshalb `verifySidecarFile()`, das die Datei vor
 dem Löschen der Quelle frisch zurückliest und vergleicht.
 
-**G9 (Repo-Hygiene)** ist inzwischen nachgeholt: `README.md` beschreibt Zweck,
+**G9 (Repo-Hygiene)** ist nachgeholt: `README.md` beschreibt Zweck,
 Voraussetzungen, Start, Sicherheitskonzept und Tests; eine `.gitignore` hält
-`node_modules/` und Editor-/Systemdateien draußen. Offen bleibt nur die
-**Lizenzdatei** – die Wahl einer Lizenz ist eine Entscheidung des Urhebers und
-wurde bewusst nicht vorweggenommen.
+`node_modules/` und Editor-/Systemdateien draußen.
+
+Die **Lizenzdatei entfällt bewusst** – der Urheber hat sich gegen eine Lizenz
+entschieden. Damit gilt das volle Urheberrecht („alle Rechte vorbehalten"), auch
+wenn das Repository öffentlich einsehbar ist. Kein offener Punkt, sondern eine
+getroffene Entscheidung: nicht ungefragt eine Lizenz nachtragen.
 
 **Nicht angefasst:** G12 (doppelt gepflegtes Handbuch) – ein Prozessthema, kein
 Fehlverhalten des Programms. Solange `HANDBUCH.md` und `HELP_CHAPTERS` von Hand
