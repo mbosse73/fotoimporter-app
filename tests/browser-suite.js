@@ -507,6 +507,41 @@
     }
 
     /* ============================================================
+       ERZEUGTE HILFE (V9/G12)
+       ============================================================ */
+    bereich("Hilfe");
+
+    {
+      pruefe("die Hilfe hat Kapitel", HELP_CHAPTERS.length > 0, HELP_CHAPTERS.length);
+      pruefe("jedes Kapitel hat ID, Titel und Inhalt",
+        HELP_CHAPTERS.every((k) => k.id && k.title && k.html && k.html.trim().length > 0));
+      pruefe("die Kapitel-IDs sind eindeutig",
+        new Set(HELP_CHAPTERS.map((k) => k.id)).size === HELP_CHAPTERS.length);
+
+      // Die Kapitel des Handbuchs müssen tatsächlich angekommen sein - eine leere
+      // oder halbe Übersetzung wäre sonst nicht zu bemerken.
+      const titel = HELP_CHAPTERS.map((k) => k.title);
+      pruefe("die neuen Kapitel sind enthalten",
+        titel.includes("Vorschau des Durchgangs") &&
+        titel.includes("Protokoll und Rückgängig") &&
+        titel.includes("Unterbrochene Sichtung fortsetzen"),
+        titel.join(" | "));
+
+      // Die Tastenkürzel-Tabelle ist der Teil, bei dem die Markdown-Übersetzung
+      // am ehesten scheitert.
+      const kuerzel = HELP_CHAPTERS.find((k) => k.id.startsWith("alle-tastenk"));
+      pruefe("die Tastenkürzel stehen als Tabelle in der Hilfe",
+        !!kuerzel && kuerzel.html.includes("<table") && kuerzel.html.includes("<kbd>V</kbd>"));
+
+      // Das erzeugte HTML muss sich einhängen lassen, ohne Skripte mitzubringen.
+      const probe = document.createElement("div");
+      probe.innerHTML = HELP_CHAPTERS.map((k) => k.html).join("");
+      pruefe("das erzeugte HTML ist gültig und enthält keine Skripte",
+        probe.querySelectorAll("script").length === 0 && probe.querySelectorAll("h3").length === HELP_CHAPTERS.length,
+        probe.querySelectorAll("h3").length + " Überschriften");
+    }
+
+    /* ============================================================
        SITZUNG ÜBER EINEN RELOAD (F4)
        ============================================================ */
     bereich("Sitzung fortsetzen");

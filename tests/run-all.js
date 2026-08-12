@@ -7,8 +7,9 @@
  * 1. Syntax-Check aller Skripte (fängt Tippfehler in app.js ohne Compiler)
  * 2. Prüfung auf doppelte globale Namen (alle Dateien teilen sich einen Scope,
  *    ein doppelter Top-Level-const bricht die App beim Laden komplett)
- * 3. Unit-Tests der Binärformat-Module
- * 4. Browser-Tests der Anwendungslogik (übersprungen, wenn Playwright fehlt)
+ * 3. Prüfung, dass die eingebaute Hilfe zu HANDBUCH.md passt
+ * 4. Unit-Tests der Binärformat-Module
+ * 5. Browser-Tests der Anwendungslogik (übersprungen, wenn Playwright fehlt)
  *
  * Was hier NICHT geprüft werden kann und weiterhin von Hand gehört: ein
  * Durchlauf mit echten Fotodateien. Die Tests ersetzen die File System Access
@@ -39,7 +40,7 @@ function kopf(text) {
 }
 
 /* ---- 1. Syntax ---- */
-kopf("1/4  Syntax-Check");
+kopf("1/5  Syntax-Check");
 const skripte = fs.readdirSync(WURZEL).filter((f) => f.endsWith(".js"));
 const kaputt = [];
 for (const datei of skripte) {
@@ -54,7 +55,7 @@ for (const datei of skripte) {
 melde("Syntax-Check", jeNach(kaputt.length === 0), kaputt.length ? `Fehler in ${kaputt.join(", ")}` : `${skripte.length} Dateien`);
 
 /* ---- 2. Doppelte globale Namen ---- */
-kopf("2/4  Globale Namen");
+kopf("2/5  Globale Namen");
 const zaehler = new Map();
 for (const datei of skripte) {
   const quelle = fs.readFileSync(path.join(WURZEL, datei), "utf8");
@@ -70,8 +71,20 @@ if (doppelt.length === 0) console.log("  ok    keine Dubletten");
 melde("Keine doppelten globalen Namen", jeNach(doppelt.length === 0),
   doppelt.length ? doppelt.map(([n]) => n).join(", ") : `${zaehler.size} Namen geprüft`);
 
-/* ---- 3. Unit-Tests ---- */
-kopf("3/4  Unit-Tests (Binärformat-Module)");
+/* ---- 3. Erzeugte Hilfe ---- */
+kopf("3/5  Hilfe gegen HANDBUCH.md");
+// help-content.js wird aus HANDBUCH.md erzeugt. Beide dürfen nicht auseinander
+// laufen - sonst behauptet die eingebaute Hilfe etwas anderes als das Handbuch.
+const hilfe = spawnSync(process.execPath, [path.join(WURZEL, "tools", "sync-help.js"), "--check"], {
+  cwd: WURZEL,
+  encoding: "utf8",
+  stdio: "inherit",
+});
+melde("Hilfe ist aus HANDBUCH.md erzeugt", jeNach(hilfe.status === 0),
+  hilfe.status === 0 ? "" : "node tools/sync-help.js ausführen");
+
+/* ---- 4. Unit-Tests ---- */
+kopf("4/5  Unit-Tests (Binärformat-Module)");
 // Die Testdateien einzeln übergeben: `node --test tests/` würde das Verzeichnis
 // als Modul zu laden versuchen und daran scheitern.
 const testDateien = fs.readdirSync(__dirname)
@@ -85,8 +98,8 @@ const unit = spawnSync(process.execPath, ["--test", "--test-reporter=spec", ...t
 });
 melde("Unit-Tests", jeNach(unit.status === 0), `${testDateien.length} Dateien`);
 
-/* ---- 4. Browser-Tests ---- */
-kopf("4/4  Browser-Tests (Anwendungslogik)");
+/* ---- 5. Browser-Tests ---- */
+kopf("5/5  Browser-Tests (Anwendungslogik)");
 const browser = spawnSync(process.execPath, [path.join(__dirname, "run-browser.js")], {
   cwd: WURZEL,
   encoding: "utf8",

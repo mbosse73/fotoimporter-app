@@ -555,7 +555,8 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
 #helpContent h3{font-size:17px;margin:0 0 14px;color:var(--text-0);}
 #helpContent h4{font-size:13.5px;margin:20px 0 8px;color:var(--text-1);text-transform:uppercase;letter-spacing:.03em;}
 #helpContent p{margin:0 0 12px;color:var(--text-1);}
-#helpContent ul{margin:0 0 12px;padding-left:20px;color:var(--text-1);}
+#helpContent ul,#helpContent ol{margin:0 0 12px;padding-left:20px;color:var(--text-1);}
+#helpContent a{color:var(--accent);}
 #helpContent li{margin-bottom:5px;}
 #helpContent kbd{
   background:var(--bg-3);border:1px solid var(--line);border-radius:4px;padding:1px 7px;
@@ -1085,6 +1086,8 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
 <script src="jpeg-segments.js"></script>
 <script src="raw-preview.js"></script>
 <script src="session-store.js"></script>
+<!-- Erzeugt aus HANDBUCH.md, siehe tools/sync-help.js -->
+<script src="help-content.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
