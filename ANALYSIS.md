@@ -1,13 +1,19 @@
 # Analyse: Foto-Importer
 
-Ergebnis eines Repo-Onboardings vom 11.08.2026 auf Commit `3128f35`.
+Ergebnis eines Repo-Onboardings vom 11.08.2026, ursprünglich erhoben auf Commit
+`3128f35`. Fortgeschrieben nach Umsetzung der Korrekturen und des Test-Setups.
 
-> **Behebungsstand:** Die Befunde in Abschnitt 2 sind inzwischen behoben – die
-> Beschreibungen bleiben als Begründung der jeweiligen Lösung stehen und
-> beschreiben den Zustand VOR der Korrektur. Was jeweils geändert wurde, steht
-> unter [Behebungsstand](#4-behebungsstand) am Ende des Dokuments. Die
-> Vorschläge in Abschnitt 3 sind teils umgesetzt, teils offen; die Tabellen sind
-> entsprechend markiert.
+> **So ist dieses Dokument zu lesen:**
+>
+> - **Abschnitt 1** beschreibt die Architektur auf dem **aktuellen** Stand.
+> - **Abschnitt 2** listet die Befunde und beschreibt den Zustand **vor** der
+>   Korrektur. Die Beschreibungen bleiben stehen, weil sie die Begründung der
+>   jeweiligen Lösung sind – sie sind kein offener Mangel mehr.
+> - **Abschnitt 3** enthält die Vorschläge, jeweils mit Umsetzungsstand.
+> - **Abschnitt 4** hält fest, was tatsächlich geändert wurde.
+>
+> Alle Befunde aus Abschnitt 2 sind behoben. Offen sind nur noch Vorschläge aus
+> Abschnitt 3, die über die Fehlerbehebung hinausgehen.
 
 ---
 
@@ -46,9 +52,10 @@ Faktisch gibt es zwei sauber getrennte Schichten:
 **Unten – Binärformat-Module** (`exif.js`, `exif-extended.js`,
 `jpeg-segments.js`, `iptc-iim.js`, `photoshop-irb.js`, `xmp-packet.js`). Reine,
 DOM-freie Funktionen, die auf `Uint8Array` arbeiten. Alle exportieren am
-Dateiende per `module.exports` und wären ohne jede Änderung in Node
-testbar. Diese Schicht ist der qualitativ stärkste Teil des Projekts: die
-Formatbehandlung ist spezifikationsnah, kommentiert und defensiv.
+Dateiende per `module.exports` und sind dadurch direkt in Node ladbar – worauf
+die Unit-Tests in `tests/` aufsetzen. Diese Schicht ist der qualitativ stärkste
+Teil des Projekts: die Formatbehandlung ist spezifikationsnah, kommentiert und
+defensiv.
 
 **Oben – `app.js`.** Enthält alles Übrige: State, sämtliches Rendering,
 Tastatursteuerung, Dialoge, Katalogverwaltung, Dateioperationen. Intern durch
@@ -114,12 +121,41 @@ gesamte Kategorie „veraltete oder verwundbare Abhängigkeit" hier nicht –
 `npm audit` hat kein Ziel. Die Angriffsfläche beschränkt sich auf den eigenen
 Code.
 
+Das gilt auch für die Tests: sie laufen mit `node:test`/`node:assert`, also
+Bordmitteln. Nur die *automatisierte* Ausführung der Browser-Tests braucht
+Playwright – optional, nicht eingecheckt, und ihr Fehlen lässt den Testlauf
+nicht scheitern, sondern meldet den Schritt als übersprungen.
+
+### Tests
+
+Das Test-Setup liegt in `tests/` und deckt zwei Ebenen ab (Details in
+[`tests/README.md`](tests/README.md)):
+
+| Teil | Was | Umfang |
+|---|---|---|
+| `tests/*.test.js` | Unit-Tests der Binärformat-Module, `node:test` | 67 Prüfungen |
+| `tests/browser.html`, `browser-suite.js` | Anwendungslogik aus `app.js` gegen die geladene App | 55 Prüfungen |
+| `tests/run-browser.js` | fährt die Browser-Tests ohne Fenster (Playwright optional) | – |
+| `tests/run-all.js` | bündelt alles zur Definition of Done | – |
+
+`app.js` lässt sich in Node nicht laden – es greift beim Start auf `document`
+zu. Die Browser-Suite wird deshalb in ein iframe mit der geladenen App
+injiziert; nur dort sind deren Top-Level-`const`/`let` sichtbar, ohne dass in
+`app.js` eine Test-Hintertür eingebaut werden müsste. Die Verzeichnis-Handles
+sind Attrappen, sodass `executeActions()` vollständig durchläuft, ohne eine
+echte Datei anzufassen.
+
+Nicht abgedeckt: das echte Dateisystem, echte Kameradateien (RAW, HEIC,
+Hersteller-EXIF) und die Oberfläche. Der manuelle Durchlauf mit Kopien echter
+Fotos bleibt deshalb Teil der Definition of Done.
+
 ### Zustand beim Prüflauf
 
 Statisch ausgeliefert lädt die App alle sieben Skripte fehlerfrei, bootet im
 Headless-Chromium **ohne JavaScript-Fehler** und rendert die vollständige
-Oberfläche. `node --check` läuft für alle sieben Dateien sauber durch. Einziger
-Konsoleneintrag ist ein 404 für `favicon.ico`.
+Oberfläche. Die Konsole ist beim Start vollständig leer – jeder Eintrag dort ist
+ein Befund. `node tests/run-all.js` läuft vollständig durch: Syntax-Check,
+Dubletten-Prüfung der globalen Namen, 67 Unit-Tests, 55 Browser-Tests.
 
 ---
 
@@ -438,15 +474,23 @@ Aufwand und Nutzen jeweils niedrig / mittel / hoch.
 
 ### Empfohlene weitere Reihenfolge
 
-Die Datenverlust-Pfade (V1, F1) sind erledigt. Sinnvoll als Nächstes:
+Die Datenverlust-Pfade (V1, F1) sind erledigt, das Testnetz (V2) steht.
+Sinnvoll als Nächstes:
 
-1. **V2** – Testnetz, bevor größer umgebaut wird. Die Korrekturen unten wurden
-   bereits gegen eine Attrappen-Version des Dateisystems geprüft; diese Prüfung
-   liegt aber nicht im Repository und läuft nicht automatisch mit.
-2. **F2** – Trockenlauf: macht den unumkehrbaren Schritt für den Nutzer
-   überprüfbar, statt ihn nur technisch abzusichern.
-3. **V5** – Aufteilung von `app.js` erst auf abgesichertem Stand.
+1. **F2** – Trockenlauf: macht den unumkehrbaren Schritt für den Nutzer
+   überprüfbar, statt ihn nur technisch abzusichern. Der größte verbliebene
+   Gewinn, weil er dort ansetzt, wo die Technik nicht hinreicht – bei der
+   Absicht des Nutzers.
+2. **V5** – Aufteilung von `app.js`. Steht jetzt auf abgesichertem Fundament;
+   die Tests fangen ab, was beim Verschieben von Code zwischen Dateien
+   schiefgehen kann.
+3. **F3/F4** – Datums-Unterordner und das Retten des Zustands über einen Reload:
+   die beiden Erweiterungen mit dem größten Alltagsnutzen.
 4. Alles Weitere nach Bedarf.
+
+Offen bleibt außerdem **V9/G12** – Handbuch und `HELP_CHAPTERS` werden weiterhin
+von Hand synchron gehalten. Das ist die einzige Stelle im Projekt, an der zwei
+Quellen dieselbe Aussage tragen.
 
 ---
 
@@ -508,16 +552,35 @@ synchron gehalten werden, deckt Punkt 5 der Definition of Done das ab.
 
 ### Verifikation
 
-Die Korrekturen wurden gegen die geladene App geprüft: `executeActions()` lief
-vollständig durch, mit Attrappen anstelle der Verzeichnis-Handles, sodass keine
-echten Dateien angefasst wurden. Abgedeckt waren unter anderem eine bereits
-belegte Zieldatei (K1), erzwungenes Scheitern der Einbettung (K2), ein
-Ereignistext mit Schrägstrich (K3), ein Stichwort über 64 Byte (M3), ein JPEG
-mit XMP vor EXIF (M4), abgelehnte und bestätigte Löschabfrage (M5) sowie zwei
-Dateien, deren Namen einander als Präfix enthalten (M7). Zusätzlich lief ein
-Regressionstest über den normalen Verschiebevorgang mit Stichworten und
-Beschreibung, der prüft, dass die Bilddaten ab Start-of-Scan byteidentisch
-bleiben. Alle 40 Prüfungen bestanden; die Konsole ist beim Start fehlerfrei.
+Jeder Befund oben ist durch mindestens einen Test im Repository abgedeckt – die
+Prüfung liegt also nicht mehr außerhalb, sondern läuft bei jedem
+`node tests/run-all.js` mit:
 
-Diese Prüfung lag außerhalb des Repositories (siehe V2 – ein dauerhaftes
-Test-Setup fehlt weiterhin).
+| Befund | Wo geprüft |
+|---|---|
+| K1 Überschreibschutz | `browser-suite.js`, Bereich „Überschreibschutz" – belegte Zieldatei, zwei gleichnamige Ziele im selben Durchgang, fremde Sidecar-Datei |
+| K2 Sidecar-Fallback | Bereich „Sidecar-Fallback" – Einbettung wird erzwungen zum Scheitern gebracht |
+| K3 Dateinamen | Bereich „Dateinamen" und „Ereignistext" – Schrägstrich im Ereignistext |
+| M1 Escaping/Import | Bereich „Escaping" (Ausbruch aus einem Attributwert) und „Import-Härtung" |
+| M3 lange Stichworte | Bereich „Lange Stichworte" sowie `iptc-iim.test.js` / `xmp-packet.test.js` |
+| M4 EXIF hinter XMP | `exif.test.js` |
+| M5 Löschabfrage | Bereich „Löschabfrage", inklusive Gegenprobe ohne Löschungen |
+| M6 Vorschau-Cache | Bereich „Vorschau-Cache" |
+| M7 Fehlerzuordnung | Bereich „Fehlerzuordnung" – zwei Dateien, deren Namen einander als Präfix enthalten |
+| G6, G7 | `photoshop-irb.test.js`, `jpeg-segments.test.js` |
+
+Dazu kommen die Zusicherungen, die nicht aus einem Befund stammen, sondern das
+Sicherheitskonzept selbst absichern: die Bilddaten ab Start-of-Scan bleiben beim
+Schreiben von Metadaten byteidentisch, die Zieldatei bleibt ein decodierbares
+Bild, mehrfaches Schreiben lässt die Datei nicht wachsen – und die Gegenproben:
+eine verfälschte Zieldatei und eine verfälschte Sidecar-Datei müssen das Löschen
+der Quelle **verhindern**.
+
+Dass die Tests tatsächlich greifen, wurde per Mutationsprobe gegengeprüft: mit
+wieder eingebautem M4-Fehler schlägt genau der zugehörige Test fehl, die
+übrigen bleiben grün.
+
+**Was weiterhin von Hand gehört:** ein Durchlauf mit Kopien echter Fotos. Die
+Tests ersetzen die File System Access API durch Attrappen – das prüft die Logik,
+nicht das Zusammenspiel mit dem echten Dateisystem. Und der echte Pfad löscht
+endgültig.
