@@ -1,19 +1,22 @@
 # Analyse: Foto-Importer
 
 Ergebnis eines Repo-Onboardings vom 11.08.2026, ursprünglich erhoben auf Commit
-`3128f35`. Fortgeschrieben nach Umsetzung der Korrekturen und des Test-Setups.
+`3128f35`. Fortgeschrieben nach Umsetzung der Korrekturen, des Test-Setups und
+**sämtlicher Verbesserungsvorschläge aus Abschnitt 3**.
 
 > **So ist dieses Dokument zu lesen:**
 >
 > - **Abschnitt 1** beschreibt die Architektur auf dem **aktuellen** Stand.
 > - **Abschnitt 2** listet die Befunde und beschreibt den Zustand **vor** der
 >   Korrektur. Die Beschreibungen bleiben stehen, weil sie die Begründung der
->   jeweiligen Lösung sind – sie sind kein offener Mangel mehr.
+>   jeweiligen Lösung sind – sie sind kein offener Mangel mehr. Die
+>   Fundstellen dort verweisen auf das damalige `app.js`; diese Datei gibt es
+>   nicht mehr, ihr Inhalt liegt seit V5 in elf Dateien (siehe Abschnitt 1).
 > - **Abschnitt 3** enthält die Vorschläge, jeweils mit Umsetzungsstand.
 > - **Abschnitt 4** hält fest, was tatsächlich geändert wurde.
 >
-> Alle Befunde aus Abschnitt 2 sind behoben. Offen sind nur noch Vorschläge aus
-> Abschnitt 3, die über die Fehlerbehebung hinausgehen.
+> Alle Befunde aus Abschnitt 2 **und** alle Vorschläge aus Abschnitt 3 sind
+> umgesetzt. Was jetzt noch offen wäre, steht am Ende von Abschnitt 3.
 
 ---
 
@@ -31,8 +34,8 @@ entfernt.
 
 ### Architekturform
 
-Eine **monolithische, klassische Web-Seite ohne Build-Schritt**. Kein Framework,
-keine Dependencies, kein Bundler, kein Transpiler, kein Server. Sieben
+Eine **klassische Web-Seite ohne Build-Schritt**. Kein Framework, keine
+Dependencies, kein Bundler, kein Transpiler, kein Server. Zwanzig
 JavaScript-Dateien werden per `<script src>` in den globalen Scope geladen, das
 gesamte CSS liegt inline in der `index.html`.
 
@@ -41,26 +44,36 @@ lokal und offline über die File System Access API auf echten Fotos arbeiten, un
 je weniger zwischen Quelltext und Ausführung steht, desto überprüfbarer ist, was
 tatsächlich mit den Dateien passiert.
 
-Erkauft wird das mit zwei Kosten: `app.js` ist mit ~4060 Zeilen deutlich zu groß
-für eine Datei, und der geteilte globale Scope macht jeden neuen Top-Level-Namen
-zu einem potenziellen Kollisionsrisiko.
+Erkauft wird das mit einer Kost, die geblieben ist: der geteilte globale Scope
+macht jeden neuen Top-Level-Namen zu einem Kollisionsrisiko. `run-all.js` prüft
+deshalb auf Dubletten. Seit der Aufteilung kommt eine zweite Regel dazu –
+Funktionsdeklarationen werden nur innerhalb ihrer eigenen Datei hochgezogen,
+Top-Level-Code sieht also nur zuvor Geladenes. Auch das wird geprüft
+(`tests/check-load-order.js`).
 
 ### Schichtung
 
 Faktisch gibt es zwei sauber getrennte Schichten:
 
-**Unten – Binärformat-Module** (`exif.js`, `exif-extended.js`,
-`jpeg-segments.js`, `iptc-iim.js`, `photoshop-irb.js`, `xmp-packet.js`). Reine,
-DOM-freie Funktionen, die auf `Uint8Array` arbeiten. Alle exportieren am
-Dateiende per `module.exports` und sind dadurch direkt in Node ladbar – worauf
-die Unit-Tests in `tests/` aufsetzen. Diese Schicht ist der qualitativ stärkste
-Teil des Projekts: die Formatbehandlung ist spezifikationsnah, kommentiert und
-defensiv.
+**Unten – Binärformat- und Infrastrukturmodule** (`exif.js`,
+`exif-extended.js`, `jpeg-segments.js`, `iptc-iim.js`, `photoshop-irb.js`,
+`xmp-packet.js`, `raw-preview.js`, `session-store.js`). Reine, weitgehend
+DOM-freie Funktionen, die auf `Uint8Array` bzw. IndexedDB arbeiten. Alle
+exportieren am Dateiende per `module.exports` und sind dadurch direkt in Node
+ladbar – worauf die Unit-Tests in `tests/` aufsetzen. Diese Schicht ist der
+qualitativ stärkste Teil des Projekts: die Formatbehandlung ist
+spezifikationsnah, kommentiert und defensiv.
 
-**Oben – `app.js`.** Enthält alles Übrige: State, sämtliches Rendering,
-Tastatursteuerung, Dialoge, Katalogverwaltung, Dateioperationen. Intern durch
-Banner-Kommentare in ~25 Abschnitte gegliedert, was das Zurechtfinden trotz der
-Länge gut trägt.
+Dazu kommt `help-content.js` – **erzeugt** aus `HANDBUCH.md`, nicht von Hand
+gepflegt.
+
+**Oben – elf Anwendungsdateien** in fester Ladereihenfolge: `state.js`,
+`source.js`, `metadata.js`, `thumbnails.js`, `grid.js`, `keywords.js`,
+`lightbox.js`, `naming.js`, `execute.js`, `catalog.js`, `overlays.js`. Sie sind
+aus dem früheren `app.js` entlang seiner Banner-Abschnitte entstanden; die
+Reihenfolge entspricht der früheren Reihenfolge innerhalb der Datei. Größte Datei
+ist `execute.js` mit gut 1000 Zeilen (Trockenlauf, Durchgang, Sitzungssicherung,
+Protokoll, Rückgängig).
 
 ### Zentrale Einstiegspunkte
 
@@ -69,7 +82,11 @@ Länge gut trägt.
 | Quellordner öffnen und Fotos einlesen | `loadPhotosFromSource()` |
 | Gridansicht aufbauen | `renderGrid()` |
 | Thumbnail-Lazy-Loading | `pumpThumbQueue()` / `loadOneThumbnail()` |
+| Durchgang vorausberechnen (Trockenlauf) | `planActions()` |
 | Aktionen ausführen (Kern der App) | `executeActions()` |
+| Durchgang zurücknehmen | `undoLastRun()` |
+| Vorschau aus einer RAW-Datei schneiden | `extractRawPreviewBlob()` → `findEmbeddedJpegRanges()` |
+| Unterbrochene Sichtung fortsetzen | `offerSessionResume()` → `applySavedMarks()` |
 | Metadaten in JPEG schreiben | `tryWriteKeywordsIntoJpeg()` → `writeKeywordsToJpeg()` |
 | Sicherheitsprüfung vor dem Löschen | `verifyMovedFile()` |
 | Dateiname bauen | `buildFilename()` |
@@ -94,15 +111,29 @@ FileSystemFileHandle
 Diese Kette ist das Herzstück und durchdacht: der irreversible Schritt steht
 ganz am Ende und ist durch eine Prüfung abgesichert, die die Datei tatsächlich
 neu vom Dateisystem liest statt dem Speicherinhalt zu vertrauen. Die
-Schwachstellen liegen nicht im Konzept, sondern in zwei Lücken der Umsetzung
+Schwachstellen lagen nicht im Konzept, sondern in zwei Lücken der Umsetzung
 (K1, K2 unten).
+
+Vorgelagert ist inzwischen `planActions()`: der Trockenlauf berechnet denselben
+Durchgang mit denselben Funktionen, ohne etwas zu verändern, und zeigt ihn zur
+Bestätigung. Nachgelagert sind die Protokolldatei und `undoLastRun()`, das die
+Kette in dieselbe Richtung rückwärts durchläuft – schreiben, prüfen, erst danach
+löschen.
 
 ### Datenhaltung
 
 - **Flüchtig:** `state` (Handles, `photos`, Cursor, Auswahl, Filter,
-  Sortierung). Ein Reload verwirft alles.
-- **Persistent:** `localStorage["fotoImporter.settings.v1"]` – Namensschema-
-  Voreinstellungen und Stichwortkatalog. Export/Import als JSON-Datei möglich.
+  Sortierung, Protokoll des letzten Durchgangs).
+- **Persistent (localStorage):** `fotoImporter.settings.v1` – Namensschema-
+  Voreinstellungen inklusive Zielunterordner-Gliederung, der Schalter für
+  Unterordner der Quelle, Stichwortkatalog. Export/Import als JSON-Datei möglich.
+- **Persistent (IndexedDB):** `fotoImporter`/`session` – die beiden
+  Verzeichnis-Handles und je Foto Pfad, Name, Markierung, Stichworte. Nur dort
+  lassen sich Handles aufbewahren; localStorage kann nur Zeichenketten. Die
+  Berechtigung wandert nicht mit und muss aus einer Nutzeraktion heraus neu
+  erteilt werden.
+- **Persistent (Zielverzeichnis):** `foto-importer-protokoll.txt` – was in
+  welchem Durchgang wohin verschoben und was gelöscht wurde.
 - **Bewusste Entscheidung:** Stichworte hängen als **Text** am Foto, nicht als
   Katalog-ID. Ein zugewiesenes Stichwort überlebt damit das Löschen aus dem
   Katalog. Innerhalb des Katalogs wird dagegen per ID referenziert, damit
@@ -133,17 +164,19 @@ Das Test-Setup liegt in `tests/` und deckt zwei Ebenen ab (Details in
 
 | Teil | Was | Umfang |
 |---|---|---|
-| `tests/*.test.js` | Unit-Tests der Binärformat-Module, `node:test` | 67 Prüfungen |
-| `tests/browser.html`, `browser-suite.js` | Anwendungslogik aus `app.js` gegen die geladene App | 55 Prüfungen |
+| `tests/*.test.js` | Unit-Tests der Binärformat-Module, `node:test` | 90 Prüfungen |
+| `tests/browser.html`, `browser-suite.js` | Anwendungslogik gegen die geladene App | 124 Prüfungen |
+| `tests/check-load-order.js` | Top-Level-Code darf nichts aus später Geladenem brauchen | – |
+| `tools/sync-help.js --check` | eingebaute Hilfe stimmt mit `HANDBUCH.md` überein | – |
 | `tests/run-browser.js` | fährt die Browser-Tests ohne Fenster (Playwright optional) | – |
 | `tests/run-all.js` | bündelt alles zur Definition of Done | – |
 
-`app.js` lässt sich in Node nicht laden – es greift beim Start auf `document`
-zu. Die Browser-Suite wird deshalb in ein iframe mit der geladenen App
-injiziert; nur dort sind deren Top-Level-`const`/`let` sichtbar, ohne dass in
-`app.js` eine Test-Hintertür eingebaut werden müsste. Die Verzeichnis-Handles
-sind Attrappen, sodass `executeActions()` vollständig durchläuft, ohne eine
-echte Datei anzufassen.
+Die Anwendungsdateien lassen sich in Node nicht laden – sie greifen beim Start
+auf `document` zu. Die Browser-Suite wird deshalb in ein iframe mit der geladenen
+App injiziert; nur dort sind deren Top-Level-`const`/`let` sichtbar, ohne dass
+eine Test-Hintertür eingebaut werden müsste. Die Verzeichnis-Handles sind
+Attrappen, sodass `executeActions()` und `undoLastRun()` vollständig durchlaufen,
+ohne eine echte Datei anzufassen.
 
 Nicht abgedeckt: das echte Dateisystem, echte Kameradateien (RAW, HEIC,
 Hersteller-EXIF) und die Oberfläche. Der manuelle Durchlauf mit Kopien echter
@@ -151,11 +184,13 @@ Fotos bleibt deshalb Teil der Definition of Done.
 
 ### Zustand beim Prüflauf
 
-Statisch ausgeliefert lädt die App alle sieben Skripte fehlerfrei, bootet im
+Statisch ausgeliefert lädt die App alle zwanzig Skripte fehlerfrei, bootet im
 Headless-Chromium **ohne JavaScript-Fehler** und rendert die vollständige
-Oberfläche. Die Konsole ist beim Start vollständig leer – jeder Eintrag dort ist
-ein Befund. `node tests/run-all.js` läuft vollständig durch: Syntax-Check,
-Dubletten-Prüfung der globalen Namen, 67 Unit-Tests, 55 Browser-Tests.
+Oberfläche. Die Konsole ist beim Start vollständig leer – auch nach dem Öffnen
+von Namensschema-Dialog, Stichwortkatalog und Hilfe; jeder Eintrag dort ist ein
+Befund. `node tests/run-all.js` läuft vollständig durch: Syntax-Check,
+Dubletten-Prüfung der globalen Namen, Ladereihenfolge, Abgleich der Hilfe mit dem
+Handbuch, 90 Unit-Tests, 124 Browser-Tests.
 
 ---
 
@@ -452,45 +487,50 @@ Aufwand und Nutzen jeweils niedrig / mittel / hoch.
 | V2 | **Test-Setup für die Binärformat-Module.** Die sechs Module sind DOM-frei und exportieren bereits per `module.exports` – ein `node --test`-Lauf ohne jede Dependency ist realistisch. Round-Trip-Tests (schreiben → zurücklesen), Grenzfälle bei Kürzung, JPEG ohne APP13, JPEG mit vorhandenem IPTC. Das ist der Teil der App, wo ein Fehler Bilddaten beschädigt, und der Teil, der sich am billigsten absichern lässt. | niedrig | **hoch** | ✅ umgesetzt (siehe `tests/`) |
 | V3 | **`escapeHtml()` um Anführungszeichen erweitern** und den Einstellungs-Import validieren (M1). Einzeiler plus Prüfschleife. | niedrig | mittel | ✅ umgesetzt |
 | V4 | **Modifikatortasten in den Tastaturhandlern prüfen** (M2). | niedrig | mittel | ✅ umgesetzt |
-| V5 | **`app.js` aufteilen.** Naheliegende Schnitte entlang der bestehenden Banner: `state.js`, `grid.js`, `lightbox.js`, `keywords.js`, `execute.js`, `help.js`. Ohne Build-Schritt bleibt es bei zusätzlichen `<script>`-Tags – der globale Scope wird dabei nicht schlechter, als er heute schon ist. Erst nach V2 angehen, damit die Umbauten abgesichert sind. | mittel | mittel | offen |
+| V5 | **`app.js` aufteilen.** Naheliegende Schnitte entlang der bestehenden Banner: `state.js`, `grid.js`, `lightbox.js`, `keywords.js`, `execute.js`, `help.js`. Ohne Build-Schritt bleibt es bei zusätzlichen `<script>`-Tags – der globale Scope wird dabei nicht schlechter, als er heute schon ist. Erst nach V2 angehen, damit die Umbauten abgesichert sind. | mittel | mittel | ✅ umgesetzt (elf Dateien) |
 | V6 | **LRU-Fenster für Großvorschauen** (M6). | niedrig | mittel | ✅ umgesetzt |
 | V7 | **Toten Code entfernen** (G1, G2, G11) und die irreführenden Namen korrigieren (G3). | niedrig | niedrig | ✅ umgesetzt |
 | V8 | **Ergebnisverfolgung pro Eintrag statt String-Matching** (M7). | niedrig | niedrig | ✅ umgesetzt |
-| V9 | **Hilfe aus einer Quelle erzeugen** (G12) – `HELP_CHAPTERS` beim Bauen aus `HANDBUCH.md` ableiten oder umgekehrt. Ohne Build-Schritt am ehesten als kleines Node-Skript, das man bei Bedarf aufruft. | mittel | niedrig | offen |
+| V9 | **Hilfe aus einer Quelle erzeugen** (G12) – `HELP_CHAPTERS` beim Bauen aus `HANDBUCH.md` ableiten oder umgekehrt. Ohne Build-Schritt am ehesten als kleines Node-Skript, das man bei Bedarf aufruft. | mittel | niedrig | ✅ umgesetzt (`tools/sync-help.js`) |
 
 ### Funktionserweiterungen
 
 | # | Vorschlag | Aufwand | Nutzen | Stand |
 |---|---|---|---|---|
 | F1 | **Rückfrage vor dem Löschen** (M5) – mit Anzahl und dem Hinweis, dass kein Papierkorb beteiligt ist. | niedrig | **hoch** | ✅ umgesetzt |
-| F2 | **Trockenlauf / Vorschau des Durchgangs.** Vor dem Start eine Liste zeigen: „diese 47 Dateien werden zu diesen Namen; diese 12 werden gelöscht", inklusive Warnung bei Namenskonflikten im Zielverzeichnis. Macht den unumkehrbaren Schritt überprüfbar. | mittel | **hoch** | offen |
-| F3 | **Verschieben in Unterordner nach Datum** (`2026/2026-08/`), optional als weiterer Baustein im Namensschema. Der häufigste nächste Wunsch bei genau diesem Werkzeugtyp; `getDirectoryHandle(name, {create:true})` gibt es her. | mittel | **hoch** | offen |
-| F4 | **Zustand über Reload retten.** Markierungen und zugewiesene Stichworte gehen aktuell bei jedem Reload verloren. Verzeichnis-Handles lassen sich in IndexedDB persistieren und mit `queryPermission()` reaktivieren – eine unterbrochene Sichtung von 800 Fotos wäre damit fortsetzbar. | mittel | **hoch** | offen |
-| F5 | **Rückgängig-Protokoll für den letzten Durchgang.** Verschobene Dateien lassen sich zurückbewegen; für gelöschte geht es nicht – aber schon eine Protokolldatei im Zielverzeichnis („was wurde wohin, was wurde gelöscht") wäre ein Sicherheitsnetz. | mittel | mittel | offen |
-| F6 | **Unterordner der Quelle einbeziehen** (heute bewusst nur die oberste Ebene), optional per Schalter. | niedrig | mittel | offen |
-| F7 | **RAW-Vorschau aus eingebettetem JPEG.** RAW-Dateien zeigen heute nur einen grauen Kasten. Die meisten RAW-Formate enthalten ein JPEG-Vorschaubild, das sich mit derselben Segment-Logik herausziehen ließe, die bereits existiert. | hoch | mittel | offen |
-| F8 | **Stichwort-Vorschläge aus vorhandenen Metadaten** – beim Einlesen bereits vorhandene IPTC/XMP-Stichworte anzeigen und übernehmbar machen. Der Lesecode dafür ist vollständig vorhanden. | mittel | mittel | offen |
+| F2 | **Trockenlauf / Vorschau des Durchgangs.** Vor dem Start eine Liste zeigen: „diese 47 Dateien werden zu diesen Namen; diese 12 werden gelöscht", inklusive Warnung bei Namenskonflikten im Zielverzeichnis. Macht den unumkehrbaren Schritt überprüfbar. | mittel | **hoch** | ✅ umgesetzt |
+| F3 | **Verschieben in Unterordner nach Datum** (`2026/2026-08/`), optional als weiterer Baustein im Namensschema. Der häufigste nächste Wunsch bei genau diesem Werkzeugtyp; `getDirectoryHandle(name, {create:true})` gibt es her. | mittel | **hoch** | ✅ umgesetzt |
+| F4 | **Zustand über Reload retten.** Markierungen und zugewiesene Stichworte gehen aktuell bei jedem Reload verloren. Verzeichnis-Handles lassen sich in IndexedDB persistieren und mit `queryPermission()` reaktivieren – eine unterbrochene Sichtung von 800 Fotos wäre damit fortsetzbar. | mittel | **hoch** | ✅ umgesetzt (IndexedDB) |
+| F5 | **Rückgängig-Protokoll für den letzten Durchgang.** Verschobene Dateien lassen sich zurückbewegen; für gelöschte geht es nicht – aber schon eine Protokolldatei im Zielverzeichnis („was wurde wohin, was wurde gelöscht") wäre ein Sicherheitsnetz. | mittel | mittel | ✅ umgesetzt |
+| F6 | **Unterordner der Quelle einbeziehen** (heute bewusst nur die oberste Ebene), optional per Schalter. | niedrig | mittel | ✅ umgesetzt |
+| F7 | **RAW-Vorschau aus eingebettetem JPEG.** RAW-Dateien zeigen heute nur einen grauen Kasten. Die meisten RAW-Formate enthalten ein JPEG-Vorschaubild, das sich mit derselben Segment-Logik herausziehen ließe, die bereits existiert. | hoch | mittel | ✅ umgesetzt (`raw-preview.js`) |
+| F8 | **Stichwort-Vorschläge aus vorhandenen Metadaten** – beim Einlesen bereits vorhandene IPTC/XMP-Stichworte anzeigen und übernehmbar machen. Der Lesecode dafür ist vollständig vorhanden. | mittel | mittel | ✅ umgesetzt |
 | F9 | **Favicon ergänzen** (G10). | niedrig | niedrig | ✅ umgesetzt |
 
-### Empfohlene weitere Reihenfolge
+### Stand
 
-Die Datenverlust-Pfade (V1, F1) sind erledigt, das Testnetz (V2) steht.
-Sinnvoll als Nächstes:
+**Alle Vorschläge sind umgesetzt.** Was daraus geworden ist, steht in
+Abschnitt 5.
 
-1. **F2** – Trockenlauf: macht den unumkehrbaren Schritt für den Nutzer
-   überprüfbar, statt ihn nur technisch abzusichern. Der größte verbliebene
-   Gewinn, weil er dort ansetzt, wo die Technik nicht hinreicht – bei der
-   Absicht des Nutzers.
-2. **V5** – Aufteilung von `app.js`. Steht jetzt auf abgesichertem Fundament;
-   die Tests fangen ab, was beim Verschieben von Code zwischen Dateien
-   schiefgehen kann.
-3. **F3/F4** – Datums-Unterordner und das Retten des Zustands über einen Reload:
-   die beiden Erweiterungen mit dem größten Alltagsnutzen.
-4. Alles Weitere nach Bedarf.
+Was dabei neu entstanden ist und selbst wieder Pflege braucht:
 
-Offen bleibt außerdem **V9/G12** – Handbuch und `HELP_CHAPTERS` werden weiterhin
-von Hand synchron gehalten. Das ist die einzige Stelle im Projekt, an der zwei
-Quellen dieselbe Aussage tragen.
+- `help-content.js` ist **erzeugt**. Wer dort etwas ändert, verliert es beim
+  nächsten `node tools/sync-help.js`. Der Text gehört ins Handbuch.
+- Die Aufteilung in elf Dateien hat eine Regel scharf gemacht, die vorher nicht
+  existierte (Ladereihenfolge, siehe Abschnitt 1). `tests/check-load-order.js`
+  fängt Verstöße ab, aber nur bis zu einer Ebene tief – ein Aufruf über zwei
+  Funktionen hinweg bliebe unbemerkt.
+- Der Trockenlauf berechnet den Durchgang ein zweites Mal. Das ist gewollt (er
+  benutzt dieselben Funktionen), kostet bei sehr vielen Fotos aber Zeit, weil
+  jeder Zielname gegen das Dateisystem geprüft wird.
+- **Rückgängig** gilt nur für den letzten Durchgang und nur innerhalb derselben
+  Sitzung. Es über einen Reload hinweg zu ermöglichen, hieße auch die
+  Ziel-Handles zu sichern und wäre der nächste sinnvolle Ausbau – wenn sich
+  zeigt, dass er gebraucht wird.
+
+Sinnvoll als Nächstes wäre nichts davon aus eigenem Antrieb, sondern das, was
+sich im Gebrauch als störend herausstellt. Der Rückstand ist an dieser Stelle
+abgearbeitet.
 
 ---
 
@@ -546,9 +586,11 @@ entschieden. Damit gilt das volle Urheberrecht („alle Rechte vorbehalten"), au
 wenn das Repository öffentlich einsehbar ist. Kein offener Punkt, sondern eine
 getroffene Entscheidung: nicht ungefragt eine Lizenz nachtragen.
 
-**Nicht angefasst:** G12 (doppelt gepflegtes Handbuch) – ein Prozessthema, kein
-Fehlverhalten des Programms. Solange `HANDBUCH.md` und `HELP_CHAPTERS` von Hand
-synchron gehalten werden, deckt Punkt 5 der Definition of Done das ab.
+**G12 (doppelt gepflegtes Handbuch)** blieb zunächst offen – ein Prozessthema,
+kein Fehlverhalten des Programms – und ist mit V9 erledigt: `HANDBUCH.md` ist
+jetzt die einzige Quelle, `help-content.js` wird daraus erzeugt und der Abgleich
+ist Teil von `run-all.js`. Punkt 5 der Definition of Done fängt das damit nicht
+mehr per Disziplin auf, sondern strukturell.
 
 ### Verifikation
 
@@ -584,3 +626,52 @@ wieder eingebautem M4-Fehler schlägt genau der zugehörige Test fehl, die
 Tests ersetzen die File System Access API durch Attrappen – das prüft die Logik,
 nicht das Zusammenspiel mit dem echten Dateisystem. Und der echte Pfad löscht
 endgültig.
+
+---
+
+## 5. Umsetzung der Vorschläge
+
+Alle Vorschläge aus Abschnitt 3 sind umgesetzt. Was jeweils entstanden ist – und
+die Entscheidung dahinter, wo sie nicht offensichtlich ist:
+
+### Funktionserweiterungen
+
+| # | Was daraus geworden ist |
+|---|---|
+| **F2** Trockenlauf | Ein Dialog vor jedem Durchgang mit Quellname → Zielordner/Zielname je Datei, der Löschliste und Warnungen (endgültiges Löschen, belegte Namen, neue Ordner). Berechnet mit `planActions()` – **denselben** Funktionen wie die Ausführung. Eine zweite, näherungsweise Berechnung wäre genau dort falsch, wo man die Vorschau braucht. Der Trockenlauf legt nichts an: Zielordner werden nur aufgelöst (`resolveExistingDirectory`), nicht erzeugt. |
+| **F3** Zielunterordner | Fünf benannte Gliederungen (Jahr bis Jahr/Monat/Tag, Ereignis, Jahr/Ereignis) im Namensschema-Dialog, mit Live-Beispiel. Maßgeblich ist das Aufnahmedatum des Fotos. Bewusst eine feste Auswahl statt eines zweiten Baukastens – eine Archivstruktur trifft man einmal. |
+| **F4** Zustand über Reload | `session-store.js` sichert Handles und Markierungen in IndexedDB; beim Start bietet ein Balken das Fortsetzen an. Nicht automatisch: ein wiederhergestellter Handle hat keine Berechtigung, und die lässt sich nur aus einer Nutzeraktion heraus erneuern. Das Quellverzeichnis wird frisch eingelesen; verschwundene Fotos werden gemeldet, nicht auf andere Dateien übertragen. |
+| **F5** Protokoll und Rückgängig | Eine fortgeschriebene `foto-importer-protokoll.txt` im Zielverzeichnis, plus `undoLastRun()` für den letzten Durchgang derselben Sitzung. Das Zurückbewegen folgt derselben Reihenfolge wie das Verschieben – schreiben, prüfen, erst danach löschen; schlägt die Prüfung fehl, existiert die Datei lieber zweimal als keinmal. Gelöschte Dateien sind ausdrücklich nicht erfasst. |
+| **F6** Unterordner der Quelle | Schalter in der Toolbar, rekursives Einlesen mit Tiefenbegrenzung, versteckte Ordner ausgenommen. Der Kern der Änderung ist unscheinbar: jeder `PhotoEntry` merkt sich jetzt den Ordner, in dem er **liegt** – `removeEntry()` auf dem Quellverzeichnis hätte die Datei im Unterordner stehen lassen, nachdem sie bereits kopiert war. |
+| **F7** RAW-Vorschau | `raw-preview.js` findet das eingebettete Vorschau-JPEG über die TIFF-Struktur (CR2, NEF, ARW, DNG, ORF, SRW, RW2), den festen RAF-Kopf oder ersatzweise eine Suche nach JPEG-Marken. Das Modul liefert nur Byte-Bereiche; dadurch genügt für die Analyse der Dateianfang und das Bild wird als schmaler Ausschnitt nachgeladen, statt 30–60 MB pro Kachel zu lesen. Entschieden wird per `createImageBitmap` – ein plausibler Bereich muss noch kein Bild sein. |
+| **F8** Vorhandene Stichworte | Beim Einlesen werden IPTC/XMP-Stichworte mitgelesen (dieselbe Leseoperation wie fürs Aufnahmedatum) und zur Übernahme angeboten. Nicht automatisch zugewiesen: was in der Datei steht, ist eine Aussage des vorherigen Programms. XMP hat Vorrang vor IPTC, weil IPTC auf 64 Byte kürzt. |
+
+### Code und Architektur
+
+| # | Was daraus geworden ist |
+|---|---|
+| **V5** Aufteilung | Elf Anwendungsdateien, geschnitten exakt an den vorhandenen Banner-Grenzen und in der ursprünglichen Reihenfolge – die Ausführungsreihenfolge beim Laden bleibt Zeile für Zeile dieselbe. Genau ein Fall musste umziehen (`loadPresetIntoBuilder`), und der wäre nicht beim Entwickeln aufgefallen, sondern nur bei Nutzern mit gespeicherter Voreinstellung. Deshalb prüft `tests/check-load-order.js` das jetzt dauerhaft. |
+| **V9/G12** Hilfe | `HANDBUCH.md` ist die einzige Quelle; `tools/sync-help.js` erzeugt daraus `help-content.js`, und `run-all.js` schlägt fehl, wenn beide auseinander sind. Punkt 5 der Definition of Done war der Versuch, das per Disziplin aufzufangen – jetzt kann es strukturell nicht mehr passieren. Der Markdown-Übersetzer im Skript kann genau das, was das Handbuch verwendet; ein vollständiger wäre eine Abhängigkeit. |
+
+### Was das mit dem Testnetz gemacht hat
+
+| | vorher | nachher |
+|---|---:|---:|
+| Unit-Prüfungen | 67 | 90 |
+| Browser-Prüfungen | 55 | 124 |
+| Prüfschritte in `run-all.js` | 4 | 6 |
+
+Neu unter den Prüfungen sind unter anderem: der Trockenlauf legt nichts an,
+schreibt nichts und löscht nichts; ein misslungenes Zurückschreiben lässt die
+Zieldatei stehen; gleiche Dateinamen in verschiedenen Unterordnern kollidieren
+weder bei der Namensvergabe noch beim Wiederherstellen einer Sitzung; die
+Tastenkürzel-Tabelle kommt in der erzeugten Hilfe tatsächlich an.
+
+Die Prüfung der Ladereihenfolge wurde per Mutationsprobe gegengeprüft: mit einem
+absichtlich zu früh gesetzten Aufruf schlägt sie fehl, danach wieder nicht.
+
+**Unverändert offen bleibt** der Durchlauf mit Kopien echter Fotos. Die Tests
+arbeiten mit Attrappen der File System Access API; Berechtigungsdialoge, echte
+Kameradateien und das Verhalten auf Netzlaufwerken oder vollen Datenträgern sind
+damit nicht abgedeckt. Für den Verschiebe- und den neuen Rückgängig-Pfad ist das
+kein formaler Rest, sondern die entscheidende Prüfung – beide löschen endgültig.
