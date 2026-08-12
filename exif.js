@@ -137,3 +137,7 @@ function parseExifDateString(str) {
   if (isNaN(date.getTime())) return null;
   return date;
 }
+
+if (typeof module !== "undefined") {
+  module.exports = { readExifDate, parseExifDateString };
+}

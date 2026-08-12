@@ -1,0 +1,23 @@
+# Das Projekt hat bewusst keine Abhängigkeiten und keinen Build-Schritt - hier
+# steht deshalb nur, was beim Arbeiten unbeabsichtigt entsteht.
+
+# Playwright wird zum Ausführen der Browser-Tests optional lokal installiert
+# (tests/run-browser.js). Es gehört NICHT ins Repository.
+node_modules/
+package.json
+package-lock.json
+
+# Betriebssystem
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editoren
+.vscode/
+.idea/
+*.swp
+*~
+
+# Testausgaben und Zwischenstände
+*.log
+/testausgabe/

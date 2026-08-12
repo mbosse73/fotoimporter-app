@@ -413,7 +413,7 @@ Aufwand und Nutzen jeweils niedrig / mittel / hoch.
 | # | Vorschlag | Aufwand | Nutzen | Stand |
 |---|---|---|---|---|
 | V1 | **K1–K3 beheben** (Überschreibschutz, Fallback-Prüfung, Dateinamen-Bereinigung). Alle drei betreffen den Kernablauf; K1 kann Fotos vernichten. | niedrig | **hoch** | ✅ umgesetzt |
-| V2 | **Test-Setup für die Binärformat-Module.** Die sechs Module sind DOM-frei und exportieren bereits per `module.exports` – ein `node --test`-Lauf ohne jede Dependency ist realistisch. Round-Trip-Tests (schreiben → zurücklesen), Grenzfälle bei Kürzung, JPEG ohne APP13, JPEG mit vorhandenem IPTC. Das ist der Teil der App, wo ein Fehler Bilddaten beschädigt, und der Teil, der sich am billigsten absichern lässt. | niedrig | **hoch** | offen |
+| V2 | **Test-Setup für die Binärformat-Module.** Die sechs Module sind DOM-frei und exportieren bereits per `module.exports` – ein `node --test`-Lauf ohne jede Dependency ist realistisch. Round-Trip-Tests (schreiben → zurücklesen), Grenzfälle bei Kürzung, JPEG ohne APP13, JPEG mit vorhandenem IPTC. Das ist der Teil der App, wo ein Fehler Bilddaten beschädigt, und der Teil, der sich am billigsten absichern lässt. | niedrig | **hoch** | ✅ umgesetzt (siehe `tests/`) |
 | V3 | **`escapeHtml()` um Anführungszeichen erweitern** und den Einstellungs-Import validieren (M1). Einzeiler plus Prüfschleife. | niedrig | mittel | ✅ umgesetzt |
 | V4 | **Modifikatortasten in den Tastaturhandlern prüfen** (M2). | niedrig | mittel | ✅ umgesetzt |
 | V5 | **`app.js` aufteilen.** Naheliegende Schnitte entlang der bestehenden Banner: `state.js`, `grid.js`, `lightbox.js`, `keywords.js`, `execute.js`, `help.js`. Ohne Build-Schritt bleibt es bei zusätzlichen `<script>`-Tags – der globale Scope wird dabei nicht schlechter, als er heute schon ist. Erst nach V2 angehen, damit die Umbauten abgesichert sind. | mittel | mittel | offen |
@@ -493,9 +493,15 @@ nicht der Fall. Für alle Formate ohne Direkteinbettung ist sie die einzige
 Ablage der Metadaten. Neu ist deshalb `verifySidecarFile()`, das die Datei vor
 dem Löschen der Quelle frisch zurückliest und vergleicht.
 
-**Nicht angefasst:** G9 (leere `README.md`, fehlende `.gitignore`/Lizenz) und
-G12 (doppelt gepflegtes Handbuch) – beides Repo-Hygiene bzw. ein Prozessthema,
-kein Fehlverhalten des Programms.
+**G9 (Repo-Hygiene)** ist inzwischen nachgeholt: `README.md` beschreibt Zweck,
+Voraussetzungen, Start, Sicherheitskonzept und Tests; eine `.gitignore` hält
+`node_modules/` und Editor-/Systemdateien draußen. Offen bleibt nur die
+**Lizenzdatei** – die Wahl einer Lizenz ist eine Entscheidung des Urhebers und
+wurde bewusst nicht vorweggenommen.
+
+**Nicht angefasst:** G12 (doppelt gepflegtes Handbuch) – ein Prozessthema, kein
+Fehlverhalten des Programms. Solange `HANDBUCH.md` und `HELP_CHAPTERS` von Hand
+synchron gehalten werden, deckt Punkt 5 der Definition of Done das ab.
 
 ### Verifikation
 

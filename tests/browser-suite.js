@@ -1,0 +1,599 @@
+/**
+ * Integrationstests für app.js.
+ *
+ * Dieses Skript wird von tests/browser.html IN das iframe der geladenen App
+ * injiziert und läuft damit in deren Realm. Das ist der Grund für den Umweg über
+ * ein iframe: app.js ist ein klassisches Skript, dessen Zustand (`state`,
+ * `currentFormatTokens`, ...) als Top-Level-`const`/`let` im globalen lexikalischen
+ * Scope liegt und deshalb NICHT über `window.` erreichbar ist. Ein Skript, das im
+ * selben Realm nachgeladen wird, sieht diese Bindungen dagegen ganz normal.
+ *
+ * Die Verzeichnis-Handles werden durch Attrappen ersetzt. executeActions() läuft
+ * damit vollständig durch - inklusive Metadaten schreiben, zurücklesen und
+ * Quelldatei löschen -, ohne dass eine einzige echte Datei angefasst wird. Genau
+ * das macht diese Tests überhaupt erst gefahrlos wiederholbar: der echte Pfad
+ * löscht endgültig.
+ */
+
+(async function fotoImporterBrowserSuite() {
+  "use strict";
+
+  const ergebnisse = [];
+  let aktuellerBereich = "";
+
+  function bereich(name) { aktuellerBereich = name; }
+  function pruefe(name, bedingung, detail) {
+    ergebnisse.push({
+      bereich: aktuellerBereich,
+      name,
+      bestanden: !!bedingung,
+      detail: detail === undefined ? "" : String(detail),
+    });
+  }
+
+  /* ============================================================
+     ATTRAPPEN FÜR DIE FILE SYSTEM ACCESS API
+     ============================================================ */
+
+  class AttrappenVerzeichnis {
+    constructor(name) {
+      this.name = name;
+      this.files = new Map();
+      this.loeschenSchlaegtFehl = new Set(); // Dateinamen, deren Löschen scheitern soll
+    }
+
+    async getFileHandle(name, options) {
+      if (!this.files.has(name)) {
+        if (!options || !options.create) {
+          const fehler = new Error(`"${name}" nicht gefunden`);
+          fehler.name = "NotFoundError";
+          throw fehler;
+        }
+        this.files.set(name, new File([], name));
+      }
+      const verzeichnis = this;
+      return {
+        async getFile() { return verzeichnis.files.get(name); },
+        async createWritable() {
+          // Wie das Original: der bisherige Inhalt wird verworfen.
+          const teile = [];
+          return {
+            async write(daten) { teile.push(daten); },
+            async close() { verzeichnis.files.set(name, new File(teile, name)); },
+          };
+        },
+      };
+    }
+
+    async removeEntry(name) {
+      if (this.loeschenSchlaegtFehl.has(name)) throw new Error("Löschen simuliert fehlgeschlagen");
+      if (!this.files.has(name)) {
+        const fehler = new Error(`"${name}" nicht gefunden`);
+        fehler.name = "NotFoundError";
+        throw fehler;
+      }
+      this.files.delete(name);
+    }
+
+    namen() { return [...this.files.keys()].sort(); }
+  }
+
+  /** Erzeugt ein echtes, decodierbares JPEG über den Canvas. */
+  async function jpegDatei(beschriftung) {
+    const canvas = document.createElement("canvas");
+    canvas.width = 48;
+    canvas.height = 32;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#c33";
+    ctx.fillRect(0, 0, 48, 32);
+    ctx.fillStyle = "#fff";
+    ctx.fillText(String(beschriftung || "x"), 2, 20);
+    const blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.9));
+    return new File([blob], "quelle.jpg", { type: "image/jpeg" });
+  }
+
+  /** Baut einen PhotoEntry, wie ihn loadPhotosFromSource() erzeugen würde. */
+  function fotoEintrag(name, datei, stichworte) {
+    return {
+      name,
+      ext: name.slice(name.lastIndexOf(".") + 1).toLowerCase(),
+      handle: { async getFile() { return datei; } },
+      thumbUrl: null,
+      largePreviewUrl: null,
+      fullResUrl: null,
+      thumbFailed: false,
+      captureDate: new Date(2024, 4, 17),
+      fileDate: new Date(2024, 4, 17),
+      fileSize: datei.size,
+      action: "none",
+      assignedKeywords: stichworte || [],
+    };
+  }
+
+  /** Setzt den App-Zustand auf die Attrappen und führt einen kompletten Durchgang aus. */
+  async function durchgang(eintraege, quelle, ziel, ereignisText) {
+    state.photos = eintraege;
+    state.sourceDirHandle = quelle;
+    state.targetDirHandle = ziel;
+    state.selectedIndices.clear();
+    state.cursorIndex = eintraege.length > 0 ? 0 : -1;
+    await executeActions(ereignisText === undefined ? "" : ereignisText);
+  }
+
+  /** Setzt das Namensschema für einen Test. */
+  function namensschema(tokens, freitext) {
+    currentFormatTokens = tokens;
+    currentFreeText = freitext === undefined ? "" : freitext;
+    currentCounterStart = 1;
+    currentCounterDigits = 3;
+  }
+
+  const echtesConfirm = window.confirm;
+  const echtesWriteKeywordsToJpeg = window.writeKeywordsToJpeg;
+  window.confirm = () => true; // Löschabfrage: wird pro Test gezielt überschrieben
+
+  try {
+    /* ============================================================
+       ESCAPING (Befund M1)
+       ============================================================ */
+    bereich("Escaping");
+
+    pruefe("escapeHtml maskiert spitze Klammern", escapeHtml("<b>") === "&lt;b&gt;", escapeHtml("<b>"));
+    pruefe("escapeHtml maskiert Anführungszeichen", escapeHtml('a"b') === "a&quot;b", escapeHtml('a"b'));
+    pruefe("escapeHtml maskiert Apostrophe", escapeHtml("a'b") === "a&#39;b", escapeHtml("a'b"));
+    pruefe("escapeHtml maskiert kaufmännisches Und zuerst", escapeHtml("&lt;") === "&amp;lt;", escapeHtml("&lt;"));
+
+    {
+      // Der eigentliche Angriff: ein Stichwort bricht aus dem value-Attribut aus.
+      // Genau diese Form landet in renderKeywordChips() und renderContainerDetail().
+      const boesartig = '" autofocus onfocus="window.__uebernommen=1';
+      const probe = document.createElement("div");
+      probe.innerHTML = `<input type="text" value="${escapeHtml(boesartig)}">`;
+      const feld = probe.querySelector("input");
+      pruefe(
+        "kein Ausbruch aus einem Attributwert",
+        feld && !feld.hasAttribute("onfocus") && !feld.hasAttribute("autofocus") && feld.value === boesartig,
+        feld ? [...feld.attributes].map((a) => a.name).join(",") : "kein Eingabefeld"
+      );
+    }
+
+    /* ============================================================
+       IMPORT VON FREMDDATEN (Befund M1)
+       ============================================================ */
+    bereich("Import-Härtung");
+
+    {
+      const katalog = {
+        keywords: [
+          { id: "a", label: "gut" },
+          { id: "b", label: 42 },     // Label ist keine Zeichenkette
+          { id: "c", label: "" },     // leer
+          "kaputt",
+          null,
+        ],
+        groups: [{ id: "g", name: "G", keywordIds: ["a", "gibtsnicht"] }, 7, null],
+        sets: "keine Liste",
+        favorites: [{ type: "keyword", keywordId: "weg" }, { type: "free", label: "frei" }, { type: "unsinn" }],
+      };
+      normalizeKeywordCatalog(katalog);
+
+      pruefe("nur wohlgeformte Stichworte überleben",
+        katalog.keywords.length === 1 && katalog.keywords[0].label === "gut",
+        JSON.stringify(katalog.keywords));
+      pruefe("Verweise auf fehlende Stichworte fallen weg",
+        katalog.groups.length === 1 && katalog.groups[0].keywordIds.length === 1,
+        JSON.stringify(katalog.groups));
+      pruefe("eine unbrauchbare Liste wird zur leeren Liste",
+        Array.isArray(katalog.sets) && katalog.sets.length === 0);
+      pruefe("Favoriten: genau 9 Slots, ungültige werden null",
+        katalog.favorites.length === 9 && katalog.favorites[0] === null
+        && katalog.favorites[1] && katalog.favorites[1].label === "frei"
+        && katalog.favorites[2] === null,
+        JSON.stringify(katalog.favorites.slice(0, 3)));
+
+      const presets = normalizePresets({
+        gut: { tokens: [{ type: "date" }, { type: "erfunden" }], counterStart: 5, counterDigits: 2 },
+        kaputt: 3,
+      });
+      pruefe("unbekannte Bausteintypen werden verworfen",
+        Object.keys(presets).length === 1 && presets.gut.tokens.length === 1 && presets.gut.tokens[0].type === "date",
+        JSON.stringify(presets));
+      pruefe("fehlende Zahlenwerte bekommen Standardwerte",
+        presets.gut.counterStart === 5 && presets.gut.counterDigits === 2 && presets.gut.freeText === "");
+    }
+
+    /* ============================================================
+       DATEINAMEN (Befund K3)
+       ============================================================ */
+    bereich("Dateinamen");
+
+    pruefe("Leerzeichen werden zu Unterstrichen", sanitizeEventText("Zwei Wörter") === "Zwei_Wörter", sanitizeEventText("Zwei Wörter"));
+    pruefe("Schrägstrich wird ersetzt", sanitizeEventText("Urlaub 2024/25") === "Urlaub_2024-25", sanitizeEventText("Urlaub 2024/25"));
+    pruefe("weitere unzulässige Zeichen werden ersetzt", sanitizeEventText('a:b?c*d"e<f>g|h') === "a-b-c-d-e-f-g-h", sanitizeEventText('a:b?c*d"e<f>g|h'));
+    pruefe("Rückwärtsschrägstrich wird ersetzt", sanitizeEventText("a\\b") === "a-b", sanitizeEventText("a\\b"));
+    pruefe("Bindestriche bleiben erhalten", sanitizeEventText("Nord-Süd") === "Nord-Süd", sanitizeEventText("Nord-Süd"));
+    pruefe("Umlaute bleiben erhalten", sanitizeEventText("Öl Straße") === "Öl_Straße", sanitizeEventText("Öl Straße"));
+    pruefe("führende Punkte werden entfernt", sanitizeFileBaseName("...versteckt") === "versteckt", sanitizeFileBaseName("...versteckt"));
+    pruefe("abschließende Punkte werden entfernt", sanitizeFileBaseName("name...") === "name", sanitizeFileBaseName("name..."));
+    pruefe("reservierte Gerätenamen werden entschärft", sanitizeFileBaseName("CON") === "_CON", sanitizeFileBaseName("CON"));
+    pruefe("auch kleingeschriebene Gerätenamen", sanitizeFileBaseName("com1") === "_com1", sanitizeFileBaseName("com1"));
+    pruefe("die Länge wird begrenzt", sanitizeFileBaseName("a".repeat(500)).length <= 200, sanitizeFileBaseName("a".repeat(500)).length);
+    pruefe("ein leerer Name bleibt leer (Aufrufer setzt den Ersatznamen)", sanitizeFileBaseName("...") === "", JSON.stringify(sanitizeFileBaseName("...")));
+
+    /* ============================================================
+       ÜBERSCHREIBSCHUTZ (Befund K1)
+       ============================================================ */
+    bereich("Überschreibschutz");
+
+    {
+      const quelle = new AttrappenVerzeichnis("quelle");
+      const ziel = new AttrappenVerzeichnis("ziel");
+      const datei = await jpegDatei("k1");
+      quelle.files.set("neu.jpg", datei);
+
+      const bestand = new File([new Uint8Array([1, 2, 3, 4, 5])], "Fest.jpg");
+      ziel.files.set("Fest.jpg", bestand);
+
+      const eintrag = fotoEintrag("neu.jpg", datei, []);
+      eintrag.action = "move";
+      namensschema([{ type: "event" }]);
+      await durchgang([eintrag], quelle, ziel, "Fest");
+
+      pruefe("die vorhandene Zieldatei bleibt unverändert",
+        ziel.files.get("Fest.jpg") === bestand && ziel.files.get("Fest.jpg").size === 5,
+        ziel.files.get("Fest.jpg").size + " Bytes");
+      pruefe("es wird auf einen freien Namen ausgewichen", ziel.files.has("Fest_1.jpg"), ziel.namen().join(","));
+      pruefe("das Verschieben gelingt trotzdem", !quelle.files.has("neu.jpg"));
+    }
+
+    {
+      // Zwei Fotos im selben Durchgang, die auf denselben Namen zielen: der zweite
+      // darf den ersten nicht überschreiben, obwohl beide vor dem Schreiben geprüft werden.
+      const quelle = new AttrappenVerzeichnis("quelle");
+      const ziel = new AttrappenVerzeichnis("ziel");
+      const a = await jpegDatei("a");
+      const b = await jpegDatei("bb");
+      quelle.files.set("a.jpg", a);
+      quelle.files.set("b.jpg", b);
+      const e1 = fotoEintrag("a.jpg", a, []); e1.action = "move";
+      const e2 = fotoEintrag("b.jpg", b, []); e2.action = "move";
+      namensschema([{ type: "event" }]);
+      await durchgang([e1, e2], quelle, ziel, "Gleich");
+
+      pruefe("zwei gleichnamige Ziele im selben Durchgang kollidieren nicht",
+        ziel.files.has("Gleich.jpg") && ziel.files.has("Gleich_1.jpg"), ziel.namen().join(","));
+      pruefe("beide Quelldateien wurden verschoben", quelle.files.size === 0, quelle.namen().join(","));
+    }
+
+    {
+      // Auch eine fremde .xmp-Datei blockiert den Namen - sonst überschreibt die
+      // eigene Sidecar-Datei eine bestehende.
+      const quelle = new AttrappenVerzeichnis("quelle");
+      const ziel = new AttrappenVerzeichnis("ziel");
+      const datei = await jpegDatei("k1b");
+      quelle.files.set("n.jpg", datei);
+      ziel.files.set("Fest.xmp", new File([new Uint8Array([9])], "Fest.xmp"));
+
+      const eintrag = fotoEintrag("n.jpg", datei, ["tag"]);
+      eintrag.action = "move";
+      namensschema([{ type: "event" }]);
+      await durchgang([eintrag], quelle, ziel, "Fest");
+
+      pruefe("eine fremde Sidecar-Datei bleibt unverändert", ziel.files.get("Fest.xmp").size === 1, ziel.files.get("Fest.xmp").size);
+      pruefe("die eigenen Dateien weichen aus",
+        ziel.files.has("Fest_1.jpg") && ziel.files.has("Fest_1.xmp"), ziel.namen().join(","));
+    }
+
+    /* ============================================================
+       SIDECAR-FALLBACK (Befund K2)
+       ============================================================ */
+    bereich("Sidecar-Fallback");
+
+    {
+      const quelle = new AttrappenVerzeichnis("quelle");
+      const ziel = new AttrappenVerzeichnis("ziel");
+      const datei = await jpegDatei("k2");
+      quelle.files.set("b.jpg", datei);
+      const eintrag = fotoEintrag("b.jpg", datei, ["Urlaub"]);
+      eintrag.action = "move";
+      namensschema([{ type: "event" }]);
+
+      // Direkte Einbettung erzwungen scheitern lassen -> der Code muss auf die
+      // reine Sidecar-Variante zurückfallen UND den Durchgang abschließen.
+      window.writeKeywordsToJpeg = () => { throw new Error("Einbettung simuliert fehlgeschlagen"); };
+      try {
+        await durchgang([eintrag], quelle, ziel, "Ohne");
+      } finally {
+        window.writeKeywordsToJpeg = echtesWriteKeywordsToJpeg;
+      }
+
+      pruefe("Foto und Sidecar liegen im Ziel",
+        ziel.files.has("Ohne.jpg") && ziel.files.has("Ohne.xmp"), ziel.namen().join(","));
+      pruefe("die Quelldatei wurde gelöscht", !quelle.files.has("b.jpg"));
+      if (ziel.files.has("Ohne.xmp")) {
+        const inhalt = await ziel.files.get("Ohne.xmp").text();
+        pruefe("die Sidecar-Datei enthält das Stichwort",
+          parseXmpData(inhalt).keywords.join(",") === "Urlaub", parseXmpData(inhalt).keywords.join(","));
+      }
+      if (ziel.files.has("Ohne.jpg")) {
+        const bytes = new Uint8Array(await ziel.files.get("Ohne.jpg").arrayBuffer());
+        pruefe("die Zieldatei ist die unveränderte Originaldatei",
+          bytes.length === datei.size, bytes.length + " vs " + datei.size);
+      }
+    }
+
+    {
+      // Gegenprobe: eine beschädigte Sidecar-Datei muss das Löschen der Quelle verhindern.
+      const quelle = new AttrappenVerzeichnis("quelle");
+      const ziel = new AttrappenVerzeichnis("ziel");
+      const datei = await jpegDatei("sc");
+      quelle.files.set("s.jpg", datei);
+      const eintrag = fotoEintrag("s.jpg", datei, ["Berg"]);
+      eintrag.action = "move";
+      namensschema([{ type: "event" }]);
+
+      const echtesBuild = window.buildXmpPacket;
+      let ersterAufruf = true;
+      window.buildXmpPacket = function (keywords, description) {
+        // Nur die Sidecar-Datei verfälschen, nicht das eingebettete Paket.
+        const ergebnis = echtesBuild.call(this, keywords, description);
+        if (ersterAufruf) { ersterAufruf = false; return ergebnis; }
+        return echtesBuild.call(this, ["falsch"], description);
+      };
+      try {
+        await durchgang([eintrag], quelle, ziel, "Prüf");
+      } finally {
+        window.buildXmpPacket = echtesBuild;
+      }
+
+      pruefe("eine falsche Sidecar-Datei verhindert das Löschen der Quelle",
+        quelle.files.has("s.jpg"), quelle.namen().join(","));
+    }
+
+    /* ============================================================
+       LANGE STICHWORTE (Befund M3)
+       ============================================================ */
+    bereich("Lange Stichworte");
+
+    {
+      const lang = "A".repeat(80); // über der IPTC-Grenze von 64 Byte
+      const quelle = new AttrappenVerzeichnis("quelle");
+      const ziel = new AttrappenVerzeichnis("ziel");
+      const datei = await jpegDatei("m3");
+      quelle.files.set("lang.jpg", datei);
+      const eintrag = fotoEintrag("lang.jpg", datei, [lang]);
+      eintrag.action = "move";
+      namensschema([{ type: "text" }], "Lang");
+      await durchgang([eintrag], quelle, ziel, "");
+
+      pruefe("ein überlanges Stichwort verhindert das Verschieben nicht",
+        ziel.files.has("Lang.jpg") && !quelle.files.has("lang.jpg"), ziel.namen().join(","));
+      if (ziel.files.has("Lang.jpg")) {
+        const bytes = new Uint8Array(await ziel.files.get("Lang.jpg").arrayBuffer());
+        pruefe("die Konsistenzprüfung besteht", verifyWrittenJpegKeywords(bytes, [lang], null) === true);
+      }
+    }
+
+    /* ============================================================
+       EREIGNISTEXT IM ABLAUF (Befund K3)
+       ============================================================ */
+    bereich("Ereignistext");
+
+    {
+      const quelle = new AttrappenVerzeichnis("quelle");
+      const ziel = new AttrappenVerzeichnis("ziel");
+      const datei = await jpegDatei("k3");
+      quelle.files.set("a.jpg", datei);
+      const eintrag = fotoEintrag("a.jpg", datei, []);
+      eintrag.action = "move";
+      namensschema([{ type: "event" }]);
+      await durchgang([eintrag], quelle, ziel, "Urlaub 2024/25");
+
+      pruefe("ein Schrägstrich im Ereignis lässt den Durchgang nicht scheitern",
+        ziel.files.has("Urlaub_2024-25.jpg") && !quelle.files.has("a.jpg"), ziel.namen().join(","));
+      if (ziel.files.has("Urlaub_2024-25.xmp")) {
+        const inhalt = await ziel.files.get("Urlaub_2024-25.xmp").text();
+        pruefe("die Beschreibung bleibt im Metadatenfeld unverändert lesbar",
+          parseXmpData(inhalt).description === "Urlaub 2024/25", parseXmpData(inhalt).description);
+      }
+    }
+
+    /* ============================================================
+       LÖSCHABFRAGE (Befund M5)
+       ============================================================ */
+    bereich("Löschabfrage");
+
+    {
+      const quelle = new AttrappenVerzeichnis("quelle");
+      const ziel = new AttrappenVerzeichnis("ziel");
+      const datei = await jpegDatei("m5");
+      quelle.files.set("weg.jpg", datei);
+
+      const abgelehnt = fotoEintrag("weg.jpg", datei, []);
+      abgelehnt.action = "delete";
+      window.confirm = () => false;
+      await durchgang([abgelehnt], quelle, ziel, "");
+      pruefe("bei Ablehnung wird nichts gelöscht", quelle.files.has("weg.jpg"), quelle.namen().join(","));
+
+      const bestaetigt = fotoEintrag("weg.jpg", datei, []);
+      bestaetigt.action = "delete";
+      window.confirm = () => true;
+      await durchgang([bestaetigt], quelle, ziel, "");
+      pruefe("bei Bestätigung wird gelöscht", !quelle.files.has("weg.jpg"), quelle.namen().join(","));
+    }
+
+    {
+      // Ein reiner Verschiebe-Durchgang darf NICHT nachfragen.
+      const quelle = new AttrappenVerzeichnis("quelle");
+      const ziel = new AttrappenVerzeichnis("ziel");
+      const datei = await jpegDatei("nofrage");
+      quelle.files.set("v.jpg", datei);
+      const eintrag = fotoEintrag("v.jpg", datei, []);
+      eintrag.action = "move";
+      namensschema([{ type: "event" }]);
+
+      let gefragt = false;
+      window.confirm = () => { gefragt = true; return true; };
+      await durchgang([eintrag], quelle, ziel, "Ohne");
+      window.confirm = () => true;
+      pruefe("ohne Löschungen wird nicht nachgefragt", gefragt === false);
+    }
+
+    /* ============================================================
+       FEHLERZUORDNUNG (Befund M7)
+       ============================================================ */
+    bereich("Fehlerzuordnung");
+
+    {
+      const quelle = new AttrappenVerzeichnis("quelle");
+      const ziel = new AttrappenVerzeichnis("ziel");
+      const a = await jpegDatei("1");
+      const b = await jpegDatei("22");
+      // Der Name der ersten Datei ist Präfix der zweiten - genau der Fall, den die
+      // frühere Zuordnung über Textvergleich verwechselt hat.
+      quelle.files.set("foto.jpg", a);
+      quelle.files.set("foto.jpg.jpg", b);
+      quelle.loeschenSchlaegtFehl.add("foto.jpg");
+
+      const e1 = fotoEintrag("foto.jpg", a, []); e1.action = "move";
+      const e2 = fotoEintrag("foto.jpg.jpg", b, []); e2.action = "move";
+      namensschema([{ type: "counter" }]);
+      await durchgang([e1, e2], quelle, ziel, "");
+
+      const verbleibend = state.photos.map((p) => p.name);
+      pruefe("nur das tatsächlich gescheiterte Foto bleibt in der Liste",
+        verbleibend.length === 1 && verbleibend[0] === "foto.jpg", verbleibend.join(","));
+      pruefe("die Aktion des gescheiterten Fotos wird zurückgesetzt",
+        state.photos[0] && state.photos[0].action === "none", state.photos[0] && state.photos[0].action);
+    }
+
+    /* ============================================================
+       VORSCHAU-CACHE (Befund M6)
+       ============================================================ */
+    bereich("Vorschau-Cache");
+
+    {
+      largePreviewLru.length = 0;
+      const eintraege = [];
+      for (let i = 0; i < LARGE_PREVIEW_CACHE_SIZE + 5; i++) {
+        eintraege.push({ largePreviewUrl: "nicht-blob:" + i, fullResUrl: null });
+      }
+      eintraege.forEach((e) => touchLargePreview(e));
+
+      const gehalten = eintraege.filter((e) => e.largePreviewUrl !== null).length;
+      pruefe("der Cache bleibt begrenzt",
+        gehalten === LARGE_PREVIEW_CACHE_SIZE && largePreviewLru.length === LARGE_PREVIEW_CACHE_SIZE,
+        gehalten + " von " + eintraege.length);
+      pruefe("das zuletzt benutzte Foto wird nicht verdrängt",
+        eintraege[eintraege.length - 1].largePreviewUrl !== null);
+      pruefe("das älteste Foto wird freigegeben", eintraege[0].largePreviewUrl === null);
+
+      // Erneutes Anfassen schiebt einen Eintrag ans Ende und schützt ihn.
+      const zweitAeltester = eintraege[6];
+      touchLargePreview(zweitAeltester);
+      for (let i = 0; i < 5; i++) touchLargePreview({ largePreviewUrl: "nicht-blob:neu" + i, fullResUrl: null });
+      pruefe("erneut benutzte Fotos rutschen ans Ende der Liste", zweitAeltester.largePreviewUrl !== null);
+      largePreviewLru.length = 0;
+    }
+
+    /* ============================================================
+       REGRESSION: DER NORMALE VERSCHIEBEVORGANG
+       ============================================================ */
+    bereich("Regression Verschieben");
+
+    {
+      const quelle = new AttrappenVerzeichnis("quelle");
+      const ziel = new AttrappenVerzeichnis("ziel");
+      const datei = await jpegDatei("reg");
+      const originalBytes = new Uint8Array(await datei.arrayBuffer());
+      quelle.files.set("r.jpg", datei);
+
+      const eintrag = fotoEintrag("r.jpg", datei, ["Berg", "Schnee"]);
+      eintrag.action = "move";
+      namensschema([{ type: "date" }, { type: "sep_underscore" }, { type: "event" }]);
+      await durchgang([eintrag], quelle, ziel, "Winter Tour");
+
+      pruefe("Zieldatei und Sidecar tragen den erwarteten Namen",
+        ziel.namen().join(",") === "20240517_Winter_Tour.jpg,20240517_Winter_Tour.xmp", ziel.namen().join(","));
+      pruefe("die Quelldatei wurde erst danach gelöscht", !quelle.files.has("r.jpg"));
+
+      if (ziel.files.has("20240517_Winter_Tour.jpg")) {
+        const bytes = new Uint8Array(await ziel.files.get("20240517_Winter_Tour.jpg").arrayBuffer());
+        pruefe("Stichworte und Beschreibung sind eingebettet",
+          verifyWrittenJpegKeywords(bytes, ["Berg", "Schnee"], "Winter Tour") === true);
+
+        // Der Kern der Sicherheitsprüfung: die Bilddaten selbst dürfen sich nicht ändern.
+        const vorher = getComparableImageBytes(originalBytes, "jpg");
+        const nachher = getComparableImageBytes(bytes, "jpg");
+        let gleich = vorher.length === nachher.length;
+        if (gleich) for (let i = 0; i < vorher.length; i++) if (vorher[i] !== nachher[i]) { gleich = false; break; }
+        pruefe("die Bilddaten ab Start-of-Scan sind byteidentisch", gleich, vorher.length + " vs " + nachher.length);
+
+        // Das Bild muss weiterhin decodierbar sein - ein struktureller Fehler
+        // im Segmentbereich fällt sonst erst beim Nutzer auf.
+        const url = URL.createObjectURL(ziel.files.get("20240517_Winter_Tour.jpg"));
+        const geladen = await new Promise((r) => {
+          const img = new Image();
+          img.onload = () => r(img.naturalWidth + "x" + img.naturalHeight);
+          img.onerror = () => r(null);
+          img.src = url;
+        });
+        URL.revokeObjectURL(url);
+        pruefe("die Zieldatei ist ein decodierbares Bild", geladen === "48x32", geladen);
+      }
+
+      if (ziel.files.has("20240517_Winter_Tour.xmp")) {
+        const inhalt = await ziel.files.get("20240517_Winter_Tour.xmp").text();
+        const gelesen = parseXmpData(inhalt);
+        pruefe("die Sidecar-Datei enthält dieselben Metadaten",
+          gelesen.keywords.join(",") === "Berg,Schnee" && gelesen.description === "Winter Tour",
+          gelesen.keywords.join(",") + " / " + gelesen.description);
+      }
+    }
+
+    {
+      // Gegenprobe zur Sicherheitskette: schlägt die Prüfung der Zieldatei fehl,
+      // muss die Quelle unangetastet bleiben.
+      const quelle = new AttrappenVerzeichnis("quelle");
+      const ziel = new AttrappenVerzeichnis("ziel");
+      const datei = await jpegDatei("kaputt");
+      quelle.files.set("k.jpg", datei);
+      const eintrag = fotoEintrag("k.jpg", datei, []);
+      eintrag.action = "move";
+      namensschema([{ type: "event" }]);
+
+      // Beim Zurücklesen eine verfälschte Datei liefern.
+      const echtesGetFileHandle = ziel.getFileHandle.bind(ziel);
+      ziel.getFileHandle = async function (name, options) {
+        const handle = await echtesGetFileHandle(name, options);
+        const echtesGetFile = handle.getFile.bind(handle);
+        handle.getFile = async () => {
+          const f = await echtesGetFile();
+          return f.size > 0 ? new File([new Uint8Array(f.size)], name) : f; // gleiche Größe, andere Bytes
+        };
+        return handle;
+      };
+      await durchgang([eintrag], quelle, ziel, "Kaputt");
+
+      pruefe("bei fehlgeschlagener Prüfung bleibt die Quelldatei liegen",
+        quelle.files.has("k.jpg"), quelle.namen().join(","));
+    }
+  } catch (fehler) {
+    ergebnisse.push({
+      bereich: aktuellerBereich || "Testlauf",
+      name: "unerwarteter Abbruch",
+      bestanden: false,
+      detail: (fehler && fehler.stack) || String(fehler),
+    });
+  } finally {
+    window.confirm = echtesConfirm;
+    window.writeKeywordsToJpeg = echtesWriteKeywordsToJpeg;
+    // Zustand nicht in der geladenen App zurücklassen
+    state.photos = [];
+    state.sourceDirHandle = null;
+    state.targetDirHandle = null;
+    state.cursorIndex = -1;
+  }
+
+  window.parent.postMessage({ typ: "fotoImporterTestErgebnis", ergebnisse }, "*");
+})();

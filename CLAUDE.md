@@ -43,8 +43,9 @@ und keine Telemetrie. Die Nutzeroberfläche ist durchgehend **deutsch**.
 | `iptc-iim.js` | ~150 | IPTC-IIM-Kodierung/-Dekodierung (Keywords 2:25, Caption 2:120) |
 | `photoshop-irb.js` | ~100 | Photoshop Image Resource Blocks („8BIM"), Container für IPTC in JPEG |
 | `xmp-packet.js` | ~105 | XMP-RDF/XML erzeugen und zurücklesen (`dc:subject`, `dc:description`) |
-| `HANDBUCH.md` | ~205 | Benutzerhandbuch (deutsch) |
+| `HANDBUCH.md` | ~210 | Benutzerhandbuch (deutsch) |
 | `ANALYSIS.md` | – | Architektur-, Fehler- und Verbesserungsanalyse |
+| `tests/` | – | Test-Setup, siehe [`tests/README.md`](tests/README.md) |
 
 `app.js` ist nicht modularisiert, aber konsequent durch Banner-Kommentare
 (`/* ==== ABSCHNITT ==== */`) in thematische Abschnitte gegliedert – der schnellste
@@ -67,18 +68,32 @@ Deployment = die Dateien auf einen beliebigen Static-Host legen (oder lokal
 
 ## Tests
 
-**Es sind keine Tests im Repository** – kein Test-Runner, keine Testdateien,
-keine CI. Die Prüf-Schritte, die stattdessen gelten, stehen unter
-[Definition of Done](#definition-of-done).
+```bash
+node tests/run-all.js
+```
 
-Bemerkenswert: alle Hilfsmodule enden mit `if (typeof module !== "undefined")
-module.exports = { … }`. Sie sind damit **bereits ohne Änderung in Node
-testbar** – ein Test-Setup könnte sie direkt per `require()` laden. Für
-`app.js` selbst funktioniert das nicht (Zugriff auf `document` beim Laden);
-dort führt der Weg über einen Browser-Test, in dem sich die Verzeichnis-Handles
-durch Attrappen ersetzen lassen – so lässt sich `executeActions()` vollständig
-durchspielen, ohne echte Dateien anzufassen. Genau so wurden die in
-`ANALYSIS.md` dokumentierten Korrekturen verifiziert.
+Ein Befehl für alles Automatisierbare: Syntax-Check, Dubletten-Prüfung der
+globalen Namen, Unit-Tests, Browser-Tests. Exit-Code 0 heißt bestanden.
+Details in [`tests/README.md`](tests/README.md).
+
+Zwei Ebenen, weil der Code auf zwei Ebenen lebt:
+
+- **`tests/*.test.js`** – `node:test`/`node:assert`, keine Abhängigkeiten. Die
+  Binärformat-Module exportieren am Dateiende per `module.exports` und lassen
+  sich direkt per `require()` laden.
+- **`tests/browser.html` + `browser-suite.js`** – für `app.js`, das sich in Node
+  nicht laden lässt (Zugriff auf `document` beim Start). Die Suite wird in ein
+  iframe mit der geladenen App injiziert und sieht dadurch deren
+  Top-Level-`const`/`let`. Die Verzeichnis-Handles sind Attrappen, sodass
+  `executeActions()` vollständig durchläuft, ohne eine echte Datei anzufassen.
+
+`node tests/run-browser.js` fährt die Browser-Tests ohne Fenster – braucht
+Playwright, das nur bei Bedarf lokal installiert wird (`--no-save`, steht in
+`.gitignore`) und **keine** Projekt-Abhängigkeit ist. Fehlt es, wird der Schritt
+übersprungen statt zu scheitern.
+
+**Was die Tests nicht abdecken:** das echte Dateisystem, echte Kameradateien und
+die Oberfläche. Der manuelle Durchlauf bleibt deshalb Teil der Definition of Done.
 
 ## Datenmodell
 
@@ -143,26 +158,25 @@ Papierkorb.
 
 ## Definition of Done
 
-Es gibt keine automatisierten Tests, deshalb gilt vor jedem Commit:
+Vor jedem Commit:
 
-1. **Syntax-Check aller Skripte** (fängt den häufigsten Fehler – Tippfehler in
-   einer 4000-Zeilen-Datei ohne Compiler):
-   ```bash
-   for f in *.js; do node --check "$f" || echo "FEHLER in $f"; done
-   ```
-2. **Keine doppelten globalen Namen** (siehe Konventionen oben).
+1. **`node tests/run-all.js` läuft durch.** Deckt Syntax-Check, doppelte globale
+   Namen, Unit-Tests und Browser-Tests ab.
+2. **Neue Tests für neues Verhalten.** Eine Korrektur ohne Test, der den Fehler
+   vorher zeigt, ist nicht fertig – sonst kehrt er zurück.
 3. **Smoke-Test im Browser:** App über `python3 -m http.server` laden und
-   sicherstellen, dass die Konsole beim Start **fehlerfrei** ist (ein 404 für
-   `favicon.ico` ist normal und der einzige erwartete Eintrag).
+   sicherstellen, dass die Konsole beim Start **fehlerfrei** ist. Sie ist
+   vollständig leer; jeder Eintrag ist ein Befund.
 4. **Manueller Durchlauf des betroffenen Pfades.** Für Änderungen am
    Verschiebe-/Metadaten-Pfad ist das nicht optional, und **immer mit Kopien
    echter Fotos in einem Wegwerf-Ordner** – der Pfad löscht Dateien endgültig.
-   Mindestens: ein JPEG mit Stichworten verschieben, danach prüfen, dass die
-   Zieldatei existiert, das Bild unbeschädigt ist, die `.xmp`-Sidecar daneben
-   liegt und die Quelldatei verschwunden ist.
+   Die Tests ersetzen das nicht: sie arbeiten mit Attrappen statt mit dem echten
+   Dateisystem. Mindestens: ein JPEG mit Stichworten verschieben, danach prüfen,
+   dass die Zieldatei existiert, das Bild unbeschädigt ist, die `.xmp`-Sidecar
+   daneben liegt und die Quelldatei verschwunden ist.
 5. **Handbuch mitziehen:** Ändert sich Verhalten, Tastenkürzel oder eine
    Beschriftung, müssen `HANDBUCH.md` **und** die `HELP_CHAPTERS` in `app.js`
-   (ab ca. Zeile 3760) angepasst werden – die beiden sind inhaltlich
+   (ab ca. Zeile 4100) angepasst werden – die beiden sind inhaltlich
    deckungsgleich gehalten und laufen sonst auseinander.
 
 ## Backup und Rollback
