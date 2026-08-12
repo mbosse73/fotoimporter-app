@@ -629,6 +629,25 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
 .existingKeywordChip{border-style:dashed;}
 .existingKeywordChip.assigned{border-style:solid;}
 
+/* Trockenlauf: die Liste kann hunderte Zeilen haben – eigener Scrollbereich,
+   damit der Ausführen-Knopf immer sichtbar bleibt. */
+#dryRunModal{max-width:820px;}
+.dryRunList{max-height:230px;overflow-y:auto;border:1px solid var(--line);border-radius:6px;}
+.dryRunRow{display:flex;align-items:center;gap:8px;padding:5px 9px;font-size:12.5px;border-bottom:1px solid var(--line);}
+.dryRunRow:last-child{border-bottom:none;}
+.dryRunFrom{flex:1;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.dryRunArrow{color:var(--text-2);flex:none;}
+.dryRunTo{flex:1;color:var(--text-0);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.dryRunTo .dryRunDir{color:var(--accent);}
+.dryRunRow.evaded .dryRunTo{color:#ffcc66;}
+.dryRunRow.deleteRow .dryRunFrom{color:var(--text-0);}
+.dryRunMore{padding:6px 9px;font-size:12px;color:var(--text-2);}
+.dryRunWarning{
+  padding:8px 10px;margin-bottom:10px;border-radius:6px;font-size:12.5px;
+  background:rgba(255,120,90,.12);border:1px solid rgba(255,120,90,.5);
+}
+.dryRunWarning.mild{background:rgba(255,204,102,.10);border-color:rgba(255,204,102,.45);}
+
 .assignKeywordResults{max-height:180px;overflow-y:auto;margin-top:8px;}
 .assignKeywordItem{
   display:flex;align-items:center;justify-content:space-between;gap:8px;
@@ -810,6 +829,11 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
     <div class="field">
       <label>Freitext (falls Baustein "Freitext" verwendet wird)</label>
       <input type="text" id="freeText" placeholder="z. B. Urlaub">
+    </div>
+
+    <div class="field">
+      <label>Unterordner im Zielverzeichnis</label>
+      <select id="subfolderMode"></select>
     </div>
 
     <div id="formatPreview"></div>
@@ -995,7 +1019,34 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
     <div id="eventPreview" class="modal .subtitle" style="font-size:12px;color:var(--text-2);"></div>
     <div class="actions">
       <button id="btnEventCancel">Abbrechen</button>
-      <button id="btnEventOk" class="primary">OK – Aktionen ausführen</button>
+      <button id="btnEventOk" class="primary">Weiter – Vorschau anzeigen</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL: Trockenlauf / Vorschau des Durchgangs ============ -->
+<div class="modalOverlay hidden" id="dryRunOverlay">
+  <div class="modal" id="dryRunModal">
+    <h2>Vorschau des Durchgangs</h2>
+    <div class="subtitle">Nichts davon ist bisher geschehen. Erst „Jetzt ausführen“ startet den Durchgang.</div>
+
+    <div id="dryRunWarnings"></div>
+
+    <div class="assignSection" id="dryRunMoveSection">
+      <div class="assignSectionTitle">Wird verschoben (<span id="dryRunMoveCount">0</span>)</div>
+      <div class="dryRunList" id="dryRunMoveList"></div>
+    </div>
+
+    <div class="assignSection" id="dryRunDeleteSection">
+      <div class="assignSectionTitle">Wird endgültig gelöscht (<span id="dryRunDeleteCount">0</span>)</div>
+      <div class="dryRunList" id="dryRunDeleteList"></div>
+    </div>
+
+    <div class="actions">
+      <div class="left">
+        <button id="btnDryRunCancel">Abbrechen</button>
+      </div>
+      <button id="btnDryRunExecute" class="primary">Jetzt ausführen ▶</button>
     </div>
   </div>
 </div>

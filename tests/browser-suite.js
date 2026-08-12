@@ -500,6 +500,195 @@
     }
 
     /* ============================================================
+       TROCKENLAUF (F2)
+       ============================================================ */
+    bereich("Trockenlauf");
+
+    {
+      const merke = currentSubfolderMode;
+      currentSubfolderMode = "year";
+
+      const quelle = new AttrappenVerzeichnis("quelle");
+      const ziel = new AttrappenVerzeichnis("ziel");
+      const a = await jpegDatei("p1");
+      const b = await jpegDatei("p2");
+      quelle.files.set("a.jpg", a);
+      quelle.files.set("b.jpg", b);
+
+      const e1 = fotoEintrag("a.jpg", a, []); e1.action = "move";
+      const e2 = fotoEintrag("b.jpg", b, []); e2.action = "delete";
+      e1.captureDate = new Date(2026, 2, 4);
+      namensschema([{ type: "counter" }]);
+
+      state.photos = [e1, e2];
+      state.sourceDirHandle = quelle;
+      state.targetDirHandle = ziel;
+      const plan = await planActions("");
+
+      pruefe("der Plan trennt Verschieben und Löschen",
+        plan.moves.length === 1 && plan.deletes.length === 1,
+        plan.moves.length + "/" + plan.deletes.length);
+      pruefe("der Plan nennt Zielordner und Zielnamen",
+        plan.moves[0].dirLabel === "2026" && plan.moves[0].targetName === "001.jpg",
+        plan.moves[0].dirLabel + "/" + plan.moves[0].targetName);
+
+      // Das entscheidende Merkmal eines Trockenlaufs: er verändert nichts.
+      pruefe("der Trockenlauf legt keine Ordner an",
+        ziel.unterordner.size === 0, [...ziel.unterordner.keys()].join(","));
+      pruefe("der Trockenlauf schreibt keine Dateien",
+        ziel.namen().length === 0, ziel.namen().join(","));
+      pruefe("der Trockenlauf löscht nichts",
+        quelle.namen().join(",") === "a.jpg,b.jpg", quelle.namen().join(","));
+
+      currentSubfolderMode = merke;
+    }
+
+    {
+      // Belegte Namen müssen in der Vorschau als solche erkennbar sein - sonst
+      // wundert man sich hinterher über die _1-Suffixe.
+      const quelle = new AttrappenVerzeichnis("quelle");
+      const ziel = new AttrappenVerzeichnis("ziel");
+      const a = await jpegDatei("k");
+      quelle.files.set("a.jpg", a);
+      ziel.files.set("bild.jpg", new File(["x"], "bild.jpg"));
+
+      const e1 = fotoEintrag("a.jpg", a, []); e1.action = "move";
+      namensschema([{ type: "text" }], "bild");
+      state.photos = [e1];
+      state.sourceDirHandle = quelle;
+      state.targetDirHandle = ziel;
+
+      const plan = await planActions("");
+      pruefe("ein belegter Zielname wird im Plan markiert",
+        plan.evadedCount === 1 && plan.moves[0].evaded === true && plan.moves[0].targetName === "bild_1.jpg",
+        plan.moves[0].targetName);
+    }
+
+    {
+      // Der Plan darf die Namensvergabe des echten Durchgangs nicht vorbelegen:
+      // sonst bekäme jedes Foto ein Suffix, obwohl der Name frei ist.
+      const quelle = new AttrappenVerzeichnis("quelle");
+      const ziel = new AttrappenVerzeichnis("ziel");
+      const a = await jpegDatei("v");
+      quelle.files.set("a.jpg", a);
+
+      const e1 = fotoEintrag("a.jpg", a, []); e1.action = "move";
+      namensschema([{ type: "text" }], "bild");
+      state.photos = [e1];
+      state.sourceDirHandle = quelle;
+      state.targetDirHandle = ziel;
+
+      const plan = await planActions("");
+      await durchgang([e1], quelle, ziel, "");
+      pruefe("nach dem Trockenlauf trägt die Datei den vorhergesagten Namen",
+        ziel.files.has(plan.moves[0].targetName) && plan.moves[0].targetName === "bild.jpg",
+        ziel.namen().join(","));
+    }
+
+    /* ============================================================
+       ZIELUNTERORDNER (F3)
+       ============================================================ */
+    bereich("Zielunterordner");
+
+    {
+      const merke = currentSubfolderMode;
+      const ctx = { date: new Date(2026, 7, 12), event: "Sommer Urlaub" };
+
+      currentSubfolderMode = "none";
+      pruefe("ohne Gliederung entstehen keine Segmente",
+        buildTargetSubfolderSegments(ctx).length === 0);
+
+      currentSubfolderMode = "year";
+      pruefe("Jahr", subfolderPathLabel(buildTargetSubfolderSegments(ctx)) === "2026",
+        subfolderPathLabel(buildTargetSubfolderSegments(ctx)));
+
+      currentSubfolderMode = "yearMonth";
+      pruefe("Jahr / Jahr-Monat", subfolderPathLabel(buildTargetSubfolderSegments(ctx)) === "2026/2026-08",
+        subfolderPathLabel(buildTargetSubfolderSegments(ctx)));
+
+      currentSubfolderMode = "yearMonthDay";
+      pruefe("bis zum Tag", subfolderPathLabel(buildTargetSubfolderSegments(ctx)) === "2026/2026-08/2026-08-12",
+        subfolderPathLabel(buildTargetSubfolderSegments(ctx)));
+
+      currentSubfolderMode = "yearEvent";
+      pruefe("Jahr / Ereignis", subfolderPathLabel(buildTargetSubfolderSegments(ctx)) === "2026/Sommer_Urlaub",
+        subfolderPathLabel(buildTargetSubfolderSegments(ctx)));
+
+      // Der gefährliche Fall: ein Schrägstrich im Ereignistext würde sonst eine
+      // zusätzliche Ordnerebene erzeugen, und getDirectoryHandle() weist jeden
+      // Namen mit Pfadseparator ohnehin zurück.
+      currentSubfolderMode = "event";
+      const boese = subfolderPathLabel(buildTargetSubfolderSegments({ date: ctx.date, event: "Urlaub 2024/25" }));
+      pruefe("ein Schrägstrich im Ereignis erzeugt keine zusätzliche Ebene",
+        boese === "Urlaub_2024-25", boese);
+
+      // Ohne Ereignistext bliebe ein Ordner ohne Namen übrig.
+      const leer = buildTargetSubfolderSegments({ date: ctx.date, event: "" });
+      pruefe("ein leeres Ereignis erzeugt keinen namenlosen Ordner", leer.length === 0, leer.join("/"));
+
+      currentSubfolderMode = merke;
+    }
+
+    {
+      // Der ganze Weg: Fotos zweier Monate landen in getrennten Unterordnern.
+      const merke = currentSubfolderMode;
+      currentSubfolderMode = "yearMonth";
+
+      const quelle = new AttrappenVerzeichnis("quelle");
+      const ziel = new AttrappenVerzeichnis("ziel");
+      const a = await jpegDatei("mai");
+      const b = await jpegDatei("jun");
+      quelle.files.set("a.jpg", a);
+      quelle.files.set("b.jpg", b);
+
+      const e1 = fotoEintrag("a.jpg", a, []); e1.action = "move";
+      const e2 = fotoEintrag("b.jpg", b, []); e2.action = "move";
+      e1.captureDate = new Date(2026, 4, 3);
+      e2.captureDate = new Date(2026, 5, 9);
+      namensschema([{ type: "counter" }]);
+      await durchgang([e1, e2], quelle, ziel, "");
+
+      const mai = ziel.unterordner.get("2026") && ziel.unterordner.get("2026").unterordner.get("2026-05");
+      const juni = ziel.unterordner.get("2026") && ziel.unterordner.get("2026").unterordner.get("2026-06");
+      pruefe("die Zielordner werden angelegt", !!mai && !!juni);
+      pruefe("jedes Foto landet im Ordner seines Aufnahmemonats",
+        mai && juni && mai.namen().join(",") === "001.jpg" && juni.namen().join(",") === "002.jpg",
+        (mai && mai.namen().join(",")) + " | " + (juni && juni.namen().join(",")));
+      pruefe("im Wurzelverzeichnis des Ziels liegt keine Datei", ziel.namen().length === 0, ziel.namen().join(","));
+
+      currentSubfolderMode = merke;
+    }
+
+    {
+      // Namen sind pro Ordner belegt, nicht global: derselbe Name in zwei
+      // Monatsordnern darf kein "_1"-Suffix auslösen.
+      const merke = currentSubfolderMode;
+      currentSubfolderMode = "year";
+
+      const quelle = new AttrappenVerzeichnis("quelle");
+      const ziel = new AttrappenVerzeichnis("ziel");
+      const a = await jpegDatei("a");
+      const b = await jpegDatei("b");
+      quelle.files.set("a.jpg", a);
+      quelle.files.set("b.jpg", b);
+
+      const e1 = fotoEintrag("a.jpg", a, []); e1.action = "move";
+      const e2 = fotoEintrag("b.jpg", b, []); e2.action = "move";
+      e1.captureDate = new Date(2025, 0, 1);
+      e2.captureDate = new Date(2026, 0, 1);
+      namensschema([{ type: "text" }], "bild");
+      await durchgang([e1, e2], quelle, ziel, "");
+
+      const j25 = ziel.unterordner.get("2025");
+      const j26 = ziel.unterordner.get("2026");
+      pruefe("derselbe Name in verschiedenen Ordnern bleibt ohne Suffix",
+        j25 && j26 && j25.files.has("bild.jpg") && j26.files.has("bild.jpg"),
+        (j25 && j25.namen().join(",")) + " | " + (j26 && j26.namen().join(",")));
+
+      currentSubfolderMode = merke;
+    }
+
+    /* ============================================================
        RAW-VORSCHAU (F7)
        ============================================================ */
     bereich("RAW-Vorschau");

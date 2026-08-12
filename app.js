@@ -191,6 +191,11 @@ const VALID_FORMAT_TOKEN_TYPES = new Set([
   "date", "event", "counter", "text", "sep_underscore", "sep_dash",
 ]);
 
+/** Gültige Gliederungen des Zielverzeichnisses (siehe SUBFOLDER_MODES). */
+const VALID_SUBFOLDER_MODES = new Set([
+  "none", "year", "yearMonth", "yearMonthDay", "event", "yearEvent",
+]);
+
 /**
  * Bringt die Namensschema-Voreinstellungen auf die erwartete Form. Ein Baustein
  * mit unbekanntem Typ würde im Builder als "undefined" erscheinen und beim
@@ -209,6 +214,10 @@ function normalizePresets(presets) {
       counterStart: Number.isFinite(preset.counterStart) ? preset.counterStart : 1,
       counterDigits: Number.isFinite(preset.counterDigits) ? preset.counterDigits : 3,
       freeText: typeof preset.freeText === "string" ? preset.freeText : "",
+      // Unbekannter Modus (ältere oder manipulierte Datei) -> keine Unterordner.
+      // Ein nicht erkannter Wert würde sonst still zu "kein Unterordner" führen,
+      // aber erst beim Ausführen - hier ist die Stelle, an der das entschieden wird.
+      subfolderMode: VALID_SUBFOLDER_MODES.has(preset.subfolderMode) ? preset.subfolderMode : "none",
     };
   }
   return result;
@@ -225,6 +234,8 @@ let currentFormatTokens = []; // Array von { type: 'date'|'event'|'counter'|'tex
 let currentCounterStart = 1;
 let currentCounterDigits = 3;
 let currentFreeText = "";
+/** Gliederung des Zielverzeichnisses in Unterordner, siehe SUBFOLDER_MODES. */
+let currentSubfolderMode = "none";
 
 function applyDefaultFormatIfNone() {
   if (appSettings.lastPreset && appSettings.presets[appSettings.lastPreset]) {
@@ -238,6 +249,7 @@ function applyDefaultFormatIfNone() {
     currentCounterStart = 1;
     currentCounterDigits = 3;
     currentFreeText = "";
+    currentSubfolderMode = "none";
   }
 }
 applyDefaultFormatIfNone();
@@ -3248,6 +3260,29 @@ document.getElementById("freeText").addEventListener("input", (ev) => {
   updateFormatPreview();
 });
 
+document.getElementById("subfolderMode").addEventListener("change", (ev) => {
+  currentSubfolderMode = ev.target.value;
+  updateFormatPreview();
+});
+
+/**
+ * Füllt die Auswahlliste der Unterordner-Gliederung aus SUBFOLDER_MODES - eine
+ * Quelle für Werte, Beschriftungen und Beispiele. Wird beim Öffnen des Dialogs
+ * aufgerufen und nicht beim Laden: SUBFOLDER_MODES steht weiter unten in der
+ * Datei und wäre zum Zeitpunkt dieses Skriptabschnitts noch nicht initialisiert.
+ */
+function renderSubfolderModeSelect() {
+  const select = document.getElementById("subfolderMode");
+  select.innerHTML = "";
+  for (const [wert, info] of Object.entries(SUBFOLDER_MODES)) {
+    const opt = document.createElement("option");
+    opt.value = wert;
+    opt.textContent = info.example ? `${info.label}  (${info.example}/)` : info.label;
+    select.appendChild(opt);
+  }
+  select.value = currentSubfolderMode;
+}
+
 /**
  * Zeichen, die auf gängigen Dateisystemen in Dateinamen unzulässig sind
  * (Windows-Regelsatz, der auch macOS und Linux mit abdeckt) plus Steuerzeichen.
@@ -3331,6 +3366,91 @@ function buildFilename(ctx) {
   return sanitizeFileBaseName(joined);
 }
 
+/* ------------------------------------------------------------
+   ZIELUNTERORDNER (F3)
+   ------------------------------------------------------------
+   Statt alles in einen Ordner zu schütten, kann der Zielpfad nach Datum
+   und/oder Ereignis gegliedert werden. Der Aufbau ist bewusst eine feste
+   Auswahl und kein zweiter Baukasten: die Ordnerstruktur eines Archivs ist eine
+   Entscheidung, die man einmal trifft und dann nie wieder ändern will - dafür
+   sind fünf benannte Varianten verständlicher als frei kombinierbare Bausteine.
+   ------------------------------------------------------------ */
+
+const SUBFOLDER_MODES = {
+  none: { label: "Kein Unterordner", example: "" },
+  year: { label: "Jahr", example: "2026" },
+  yearMonth: { label: "Jahr / Jahr-Monat", example: "2026/2026-08" },
+  yearMonthDay: { label: "Jahr / Jahr-Monat / Jahr-Monat-Tag", example: "2026/2026-08/2026-08-12" },
+  event: { label: "Ereignis", example: "Sommerurlaub" },
+  yearEvent: { label: "Jahr / Ereignis", example: "2026/Sommerurlaub" },
+};
+
+/**
+ * Baut die Ordnersegmente für ein einzelnes Foto.
+ *
+ * Jedes Segment durchläuft dieselbe Bereinigung wie ein Dateiname - ein
+ * Ereignistext mit Schrägstrich würde sonst eine zusätzliche Ordnerebene
+ * erzeugen, und getDirectoryHandle() weist jeden Namen mit Pfadseparator
+ * ohnehin zurück. Leere Segmente (Ereignis ohne Eingabe) fallen weg, sonst
+ * entstünde ein Ordner ohne Namen.
+ *
+ * @param {{date: Date, event: string}} ctx
+ * @returns {string[]}
+ */
+function buildTargetSubfolderSegments(ctx) {
+  const d = ctx.date;
+  const yyyy = String(d.getFullYear());
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const event = sanitizeFileBaseName(sanitizeEventText(ctx.event || ""));
+
+  let segments;
+  switch (currentSubfolderMode) {
+    case "year": segments = [yyyy]; break;
+    case "yearMonth": segments = [yyyy, `${yyyy}-${mm}`]; break;
+    case "yearMonthDay": segments = [yyyy, `${yyyy}-${mm}`, `${yyyy}-${mm}-${dd}`]; break;
+    case "event": segments = [event]; break;
+    case "yearEvent": segments = [yyyy, event]; break;
+    default: segments = []; break;
+  }
+  return segments.map((s) => sanitizeFileBaseName(s)).filter((s) => s.length > 0);
+}
+
+/** Der Pfad als Text, für Anzeige, Protokoll und als Schlüssel der Namensvergabe. */
+function subfolderPathLabel(segments) {
+  return segments.join("/");
+}
+
+/**
+ * Löst einen Unterordnerpfad unterhalb des Zielverzeichnisses auf und legt
+ * fehlende Ebenen an. Innerhalb eines Durchgangs wird das Ergebnis gecacht:
+ * bei 500 Fotos desselben Tages würde sonst 500-mal derselbe Ordner aufgelöst.
+ *
+ * @param {FileSystemDirectoryHandle} rootHandle
+ * @param {string[]} segments
+ * @param {Map<string, FileSystemDirectoryHandle>} cache
+ * @returns {Promise<FileSystemDirectoryHandle>}
+ */
+async function resolveTargetDirectory(rootHandle, segments, cache) {
+  const key = subfolderPathLabel(segments);
+  if (cache.has(key)) return cache.get(key);
+
+  let handle = rootHandle;
+  const bisher = [];
+  for (const segment of segments) {
+    bisher.push(segment);
+    const teilKey = subfolderPathLabel(bisher);
+    if (cache.has(teilKey)) {
+      handle = cache.get(teilKey);
+      continue;
+    }
+    handle = await handle.getDirectoryHandle(segment, { create: true });
+    cache.set(teilKey, handle);
+  }
+  cache.set(key, handle);
+  return handle;
+}
+
 function updateFormatPreview() {
   const exampleCtx = {
     date: new Date(),
@@ -3339,8 +3459,9 @@ function updateFormatPreview() {
     ext: "jpg",
   };
   const name = buildFilename(exampleCtx);
+  const ordner = subfolderPathLabel(buildTargetSubfolderSegments(exampleCtx));
   document.getElementById("formatPreview").innerHTML =
-    `Beispiel: <b>${escapeHtml(name || "(leer)")}.jpg</b>`;
+    `Beispiel: <b>${escapeHtml(ordner ? ordner + "/" : "")}${escapeHtml(name || "(leer)")}.jpg</b>`;
 }
 
 document.getElementById("btnRenameSettings").addEventListener("click", () => {
@@ -3348,6 +3469,7 @@ document.getElementById("btnRenameSettings").addEventListener("click", () => {
   document.getElementById("counterStart").value = String(currentCounterStart);
   document.getElementById("counterDigits").value = String(currentCounterDigits);
   document.getElementById("freeText").value = currentFreeText;
+  renderSubfolderModeSelect();
   refreshPresetSelect();
   renameModalOverlay.classList.remove("hidden");
 });
@@ -3382,6 +3504,7 @@ function loadPresetIntoBuilder(name) {
   currentCounterStart = preset.counterStart;
   currentCounterDigits = preset.counterDigits;
   currentFreeText = preset.freeText || "";
+  currentSubfolderMode = preset.subfolderMode || "none";
 }
 
 document.getElementById("presetSelect").addEventListener("change", (ev) => {
@@ -3392,6 +3515,7 @@ document.getElementById("presetSelect").addEventListener("change", (ev) => {
   document.getElementById("counterStart").value = String(currentCounterStart);
   document.getElementById("counterDigits").value = String(currentCounterDigits);
   document.getElementById("freeText").value = currentFreeText;
+  renderSubfolderModeSelect();
   appSettings.lastPreset = name;
   saveSettings(appSettings);
 });
@@ -3404,6 +3528,7 @@ document.getElementById("btnSavePreset").addEventListener("click", () => {
     counterStart: currentCounterStart,
     counterDigits: currentCounterDigits,
     freeText: currentFreeText,
+    subfolderMode: currentSubfolderMode,
   };
   appSettings.lastPreset = name;
   saveSettings(appSettings);
@@ -3501,8 +3626,9 @@ document.getElementById("btnRunActions").addEventListener("click", () => {
     eventModalOverlay.classList.remove("hidden");
     document.getElementById("eventTextInput").focus();
   } else {
-    // Nur Löschungen -> keine Ereignisabfrage nötig
-    executeActions("");
+    // Nur Löschungen -> keine Ereignisabfrage nötig, aber die Vorschau erst recht:
+    // hier ist jede Zeile ein unumkehrbarer Schritt.
+    openDryRunDialog("");
   }
 });
 
@@ -3520,13 +3646,222 @@ document.getElementById("btnEventCancel").addEventListener("click", () => {
   eventModalOverlay.classList.add("hidden");
 });
 
-document.getElementById("btnEventOk").addEventListener("click", () => {
+document.getElementById("btnEventOk").addEventListener("click", async () => {
   const eventText = document.getElementById("eventTextInput").value;
   eventModalOverlay.classList.add("hidden");
-  executeActions(eventText);
+  await openDryRunDialog(eventText);
 });
 
-async function executeActions(eventText) {
+/* ---- Trockenlauf-Dialog ---- */
+
+const dryRunOverlay = document.getElementById("dryRunOverlay");
+/** Der gerade angezeigte Plan samt Ereignistext, bis er ausgeführt oder verworfen wird. */
+let pendingRun = null;
+
+/** Wie viele Zeilen die Vorschau höchstens auflistet, bevor sie zusammenfasst. */
+const DRY_RUN_MAX_ROWS = 200;
+
+async function openDryRunDialog(eventText) {
+  const moveCount = state.photos.filter((p) => p.action === "move").length;
+  if (moveCount > 0 && !state.targetDirHandle) {
+    showToast("Bitte zuerst ein Zielverzeichnis wählen.", "error");
+    return;
+  }
+  setStatus("Berechne Vorschau…");
+  try {
+    const plan = await planActions(eventText);
+    pendingRun = { plan, eventText };
+    renderDryRunDialog(plan);
+    dryRunOverlay.classList.remove("hidden");
+    document.getElementById("btnDryRunExecute").focus();
+  } catch (e) {
+    console.error("Vorschau konnte nicht berechnet werden", e);
+    showToast("Vorschau konnte nicht berechnet werden: " + e.message, "error");
+  } finally {
+    setStatus("");
+  }
+}
+
+function closeDryRunDialog() {
+  dryRunOverlay.classList.add("hidden");
+  pendingRun = null;
+}
+
+document.getElementById("btnDryRunCancel").addEventListener("click", closeDryRunDialog);
+dryRunOverlay.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") {
+    ev.preventDefault();
+    closeDryRunDialog();
+  }
+  ev.stopPropagation();
+});
+
+document.getElementById("btnDryRunExecute").addEventListener("click", async () => {
+  if (!pendingRun) return;
+  const { plan, eventText } = pendingRun;
+  closeDryRunDialog();
+  await executeActions(eventText, plan);
+});
+
+/** Baut die Vorschauliste auf. */
+function renderDryRunDialog(plan) {
+  const zielName = state.targetDirHandle ? state.targetDirHandle.name : "–";
+
+  /* Warnungen zuerst: sie sind der Grund, warum es diesen Dialog gibt. */
+  const warnungen = [];
+  if (plan.deletes.length > 0) {
+    warnungen.push({
+      stufe: "hart",
+      text: `${plan.deletes.length} Datei(en) werden endgültig gelöscht. Die File System Access API kennt keinen Papierkorb – ein Wiederherstellen ist danach nicht möglich.`,
+    });
+  }
+  if (plan.evadedCount > 0) {
+    warnungen.push({
+      stufe: "mild",
+      text: `${plan.evadedCount} Zielname(n) sind bereits belegt. Diese Dateien bekommen ein Suffix (_1, _2, …); überschrieben wird nichts.`,
+    });
+  }
+  const neueOrdner = new Set(plan.moves.map((m) => m.dirLabel).filter(Boolean));
+  if (neueOrdner.size > 0) {
+    warnungen.push({
+      stufe: "mild",
+      text: `Es wird in ${neueOrdner.size} Unterordner unterhalb von „${zielName}“ einsortiert; fehlende Ordner werden angelegt.`,
+    });
+  }
+  document.getElementById("dryRunWarnings").innerHTML = warnungen
+    .map((w) => `<div class="dryRunWarning${w.stufe === "mild" ? " mild" : ""}">${escapeHtml(w.text)}</div>`)
+    .join("");
+
+  /* Verschieben */
+  document.getElementById("dryRunMoveCount").textContent = String(plan.moves.length);
+  document.getElementById("dryRunMoveSection").classList.toggle("hidden", plan.moves.length === 0);
+  const moveHtml = plan.moves.slice(0, DRY_RUN_MAX_ROWS).map((item) => {
+    const ordner = item.dirLabel ? `<span class="dryRunDir">${escapeHtml(item.dirLabel)}/</span>` : "";
+    return `<div class="dryRunRow${item.evaded ? " evaded" : ""}">` +
+      `<span class="dryRunFrom" title="${escapeHtml(photoDisplayName(item.entry))}">${escapeHtml(photoDisplayName(item.entry))}</span>` +
+      `<span class="dryRunArrow">→</span>` +
+      `<span class="dryRunTo" title="${escapeHtml(item.dirLabel ? item.dirLabel + "/" + item.targetName : item.targetName)}">${ordner}${escapeHtml(item.targetName)}</span>` +
+      `</div>`;
+  }).join("");
+  const moveRest = plan.moves.length - DRY_RUN_MAX_ROWS;
+  document.getElementById("dryRunMoveList").innerHTML = moveHtml +
+    (moveRest > 0 ? `<div class="dryRunMore">… und ${moveRest} weitere</div>` : "");
+
+  /* Löschen */
+  document.getElementById("dryRunDeleteCount").textContent = String(plan.deletes.length);
+  document.getElementById("dryRunDeleteSection").classList.toggle("hidden", plan.deletes.length === 0);
+  const deleteHtml = plan.deletes.slice(0, DRY_RUN_MAX_ROWS).map((entry) =>
+    `<div class="dryRunRow deleteRow">` +
+    `<span class="dryRunFrom" title="${escapeHtml(photoDisplayName(entry))}">🗑 ${escapeHtml(photoDisplayName(entry))}</span>` +
+    `</div>`
+  ).join("");
+  const deleteRest = plan.deletes.length - DRY_RUN_MAX_ROWS;
+  document.getElementById("dryRunDeleteList").innerHTML = deleteHtml +
+    (deleteRest > 0 ? `<div class="dryRunMore">… und ${deleteRest} weitere</div>` : "");
+}
+
+/* ------------------------------------------------------------
+   TROCKENLAUF (F2)
+   ------------------------------------------------------------
+   Die Sicherheitskette in executeActions() schützt vor technischem Datenverlust:
+   sie stellt sicher, dass die Zieldatei heil angekommen ist, bevor die Quelle
+   fällt. Wogegen sie nicht schützt, ist ein Irrtum des Nutzers - falsches
+   Namensschema, falscher Zielordner, versehentlich 30 Fotos auf „Löschen".
+   Deshalb wird der komplette Durchgang vorher trocken berechnet und angezeigt.
+
+   Der Trockenlauf legt NICHTS an und ändert NICHTS. Zielordner, die es noch
+   nicht gibt, werden auch nicht angelegt - dort kann folglich auch nichts
+   kollidieren, was die Namensvergabe berücksichtigt.
+   ------------------------------------------------------------ */
+
+/**
+ * @typedef {Object} MovePlanItem
+ * @property {PhotoEntry} entry
+ * @property {string[]} segments - Zielunterordner, relativ zum Zielverzeichnis
+ * @property {string} dirLabel - derselbe Pfad als Text ("" = direkt im Ziel)
+ * @property {string} targetName - vorgesehener Dateiname im Zielordner
+ * @property {boolean} evaded - true, wenn wegen eines belegten Namens
+ *   ausgewichen werden musste (Suffix _1, _2, …)
+ */
+
+/**
+ * Berechnet den kompletten Durchgang, ohne etwas zu verändern.
+ *
+ * Verwendet dieselben Funktionen wie die Ausführung (buildFilename,
+ * buildTargetSubfolderSegments, ensureUniqueName) - eine zweite, "ungefähre"
+ * Berechnung wäre wertlos, weil sie genau in den Fällen abwiche, in denen die
+ * Vorschau gebraucht wird.
+ *
+ * @param {string} eventText
+ * @returns {Promise<{moves: MovePlanItem[], deletes: PhotoEntry[], evadedCount: number}>}
+ */
+async function planActions(eventText) {
+  const moveTargets = state.photos.filter((p) => p.action === "move");
+  const deleteTargets = state.photos.filter((p) => p.action === "delete");
+
+  // Eigener Reservierungstopf: der Trockenlauf darf die Namensvergabe des
+  // späteren echten Durchgangs nicht vorbelegen.
+  const reserved = new Set();
+  const dirCache = new Map();
+  const moves = [];
+  let counter = currentCounterStart;
+  let evadedCount = 0;
+
+  for (const entry of moveTargets) {
+    const date = entry.captureDate || entry.fileDate || new Date();
+    const segments = buildTargetSubfolderSegments({ date, event: eventText });
+    const dirLabel = subfolderPathLabel(segments);
+    const baseName = buildFilename({ date, event: eventText, counter }) || "foto";
+
+    // Ordner nur AUFLÖSEN, nicht anlegen. Existiert er noch nicht, kann dort
+    // auch keine Datei im Weg sein - die Namensprüfung beschränkt sich dann auf
+    // die in diesem Durchgang bereits vergebenen Namen.
+    const dirHandle = state.targetDirHandle
+      ? await resolveExistingDirectory(state.targetDirHandle, segments, dirCache)
+      : null;
+    const pruefHandle = dirHandle || { async getFileHandle() { const e = new Error("nicht vorhanden"); e.name = "NotFoundError"; throw e; } };
+
+    const targetName = await ensureUniqueName(pruefHandle, baseName, entry.ext, dirLabel, reserved);
+    const evaded = targetName !== `${baseName}.${entry.ext}`;
+    if (evaded) evadedCount++;
+
+    moves.push({ entry, segments, dirLabel, targetName, evaded });
+    counter++;
+  }
+
+  return { moves, deletes: deleteTargets, evadedCount };
+}
+
+/**
+ * Löst einen Unterordnerpfad auf, OHNE fehlende Ebenen anzulegen. Liefert null,
+ * sobald eine Ebene fehlt. Gegenstück zu resolveTargetDirectory() für den
+ * Trockenlauf, der das Zielverzeichnis nicht verändern darf.
+ */
+async function resolveExistingDirectory(rootHandle, segments, cache) {
+  const key = subfolderPathLabel(segments);
+  if (cache.has(key)) return cache.get(key);
+
+  let handle = rootHandle;
+  for (const segment of segments) {
+    if (!handle) break;
+    try {
+      handle = await handle.getDirectoryHandle(segment);
+    } catch (e) {
+      handle = null;
+    }
+  }
+  cache.set(key, handle);
+  return handle;
+}
+
+/**
+ * Führt den Durchgang aus.
+ * @param {string} eventText
+ * @param {{moves: MovePlanItem[], deletes: PhotoEntry[]}} [plan] - vorberechneter
+ *   Plan aus dem Trockenlauf. Fehlt er, wird er hier berechnet; die Zielnamen
+ *   werden ohnehin frisch gegen das Dateisystem geprüft (siehe unten).
+ */
+async function executeActions(eventText, plan) {
   const moveTargets = state.photos.filter((p) => p.action === "move");
   const deleteTargets = state.photos.filter((p) => p.action === "delete");
   const total = moveTargets.length + deleteTargets.length;
@@ -3538,11 +3873,22 @@ async function executeActions(eventText) {
     return;
   }
 
+  // Die Unterordner-Zuordnung aus dem Plan übernehmen, damit ausgeführt wird,
+  // was angezeigt wurde. Die DATEINAMEN werden trotzdem neu ermittelt: zwischen
+  // Anzeige und Ausführung kann im Zielverzeichnis etwas hinzugekommen sein, und
+  // der einzige Schutz vor dem Überschreiben ist die Prüfung unmittelbar davor.
+  const plannedSegments = new Map();
+  if (plan) for (const item of plan.moves) plannedSegments.set(item.entry, item.segments);
+
   // Löschen ist der einzige unumkehrbare Schritt in diesem Programm: removeEntry()
   // entfernt die Datei endgültig, die File System Access API kennt keinen Papierkorb.
   // Deshalb hier eine ausdrückliche Rückfrage - das Löschen einer Voreinstellung
   // oder eines Stichworts fragt schließlich auch nach.
-  if (deleteTargets.length > 0) {
+  // Wurde der Durchgang über die Vorschau gestartet, ist bereits jede einzelne
+  // Datei namentlich aufgeführt und der Hinweis auf den fehlenden Papierkorb
+  // gegeben worden - dann wäre diese Rückfrage nur ein zweiter Klick auf
+  // dieselbe Frage. Ohne Vorschau (direkter Aufruf) bleibt sie die letzte Instanz.
+  if (deleteTargets.length > 0 && !plan) {
     const anzahl = deleteTargets.length === 1
       ? "1 Foto wird"
       : `${deleteTargets.length} Fotos werden`;
@@ -3568,14 +3914,21 @@ async function executeActions(eventText) {
   // Das Dateisystem entscheidet über freie Namen; Reste aus einem früheren
   // Durchgang (ggf. mit anderem Zielverzeichnis) würden nur stören.
   usedTargetNames.clear();
+  const dirCache = new Map();
+  const moveLog = [];
 
   // 1) Verschieben: kopieren ins Ziel (mit neuem Namen), dann im Quellordner löschen
   for (const entry of moveTargets) {
     try {
       const file = await entry.handle.getFile();
       const date = entry.captureDate || new Date(file.lastModified);
+      const segments = plannedSegments.get(entry) || buildTargetSubfolderSegments({ date, event: eventText });
+      const dirLabel = subfolderPathLabel(segments);
+      // Erst hier wird der Ordner tatsächlich angelegt - ein abgebrochener
+      // Trockenlauf soll keine leeren Ordner hinterlassen.
+      const targetDir = await resolveTargetDirectory(state.targetDirHandle, segments, dirCache);
       const baseName = buildFilename({ date, event: eventText, counter });
-      const finalName = await ensureUniqueName(state.targetDirHandle, baseName || "foto", entry.ext);
+      const finalName = await ensureUniqueName(targetDir, baseName || "foto", entry.ext, dirLabel);
       const finalBaseNameWithoutExt = finalName.slice(0, finalName.lastIndexOf("."));
 
       // Die Beschreibung ist der UNVERÄNDERTE Ereignistext (nur getrimmt, OHNE die
@@ -3607,13 +3960,13 @@ async function executeActions(eventText) {
         }
       }
 
-      const targetFileHandle = await state.targetDirHandle.getFileHandle(finalName, { create: true });
+      const targetFileHandle = await targetDir.getFileHandle(finalName, { create: true });
       const writable = await targetFileHandle.createWritable();
       await writable.write(fileContentToWrite);
       await writable.close();
 
       if (hasMetadataToWrite) {
-        await writeXmpSidecar(state.targetDirHandle, finalBaseNameWithoutExt, entry.assignedKeywords, description);
+        await writeXmpSidecar(targetDir, finalBaseNameWithoutExt, entry.assignedKeywords, description);
       }
 
       // Sicherheitsprüfung: die soeben geschriebene Zieldatei wird aktiv neu vom
@@ -3634,7 +3987,7 @@ async function executeActions(eventText) {
       // den Verschiebevorgang abbrechen, obwohl dem Nutzer gerade gemeldet wurde,
       // der Sidecar-Weg greife. Die Sidecar-Datei selbst wird unten separat geprüft.
       const verification = await verifyMovedFile(
-        state.targetDirHandle,
+        targetDir,
         finalName,
         fileContentToWrite,
         entry.ext,
@@ -3655,7 +4008,7 @@ async function executeActions(eventText) {
       // prüfen, bevor das Original gelöscht wird.
       if (hasMetadataToWrite) {
         const sidecarCheck = await verifySidecarFile(
-          state.targetDirHandle,
+          targetDir,
           finalBaseNameWithoutExt,
           entry.assignedKeywords,
           description
@@ -3753,6 +4106,11 @@ async function executeActions(eventText) {
  * Wird zu Beginn jedes Durchgangs geleert - das Dateisystem ist die maßgebliche
  * Instanz, ein Altbestand aus einem früheren (womöglich anderen) Zielverzeichnis
  * würde nur unnötige "_1"-Suffixe erzeugen.
+ *
+ * Die Namen sind mit dem ZIELORDNER geschlüsselt ("2026/2026-08|foto.jpg"). Seit
+ * es Unterordner im Ziel gibt, ist ein Name nur innerhalb seines Ordners belegt -
+ * ein gemeinsamer Topf würde in jedem weiteren Ordner überflüssige "_1"-Suffixe
+ * erzeugen, obwohl der Name dort frei ist.
  */
 const usedTargetNames = new Set();
 
@@ -3789,12 +4147,14 @@ async function targetFileExists(targetDirHandle, name) {
  * damit zwei Fotos mit gleichem Basisnamen aber verschiedener Endung (foto.jpg /
  * foto.png) sich nicht gegenseitig die Sidecar-Datei überschreiben.
  */
-async function ensureUniqueName(targetDirHandle, baseName, ext) {
+async function ensureUniqueName(targetDirHandle, baseName, ext, dirKey, reserved) {
+  const belegte = reserved || usedTargetNames;
+  const schluessel = (name) => `${dirKey || ""}|${name}`;
   let candidate = `${baseName}.${ext}`;
   let n = 1;
   while (
-    usedTargetNames.has(candidate) ||
-    usedTargetNames.has(sidecarNameFor(candidate)) ||
+    belegte.has(schluessel(candidate)) ||
+    belegte.has(schluessel(sidecarNameFor(candidate))) ||
     (await targetFileExists(targetDirHandle, candidate)) ||
     (await targetFileExists(targetDirHandle, sidecarNameFor(candidate)))
   ) {
@@ -3804,8 +4164,8 @@ async function ensureUniqueName(targetDirHandle, baseName, ext) {
       throw new Error(`Kein freier Dateiname für „${baseName}.${ext}" im Zielverzeichnis gefunden.`);
     }
   }
-  usedTargetNames.add(candidate);
-  usedTargetNames.add(sidecarNameFor(candidate));
+  belegte.add(schluessel(candidate));
+  belegte.add(schluessel(sidecarNameFor(candidate)));
   return candidate;
 }
 
