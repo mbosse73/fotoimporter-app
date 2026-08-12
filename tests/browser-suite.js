@@ -500,6 +500,72 @@
     }
 
     /* ============================================================
+       RAW-VORSCHAU (F7)
+       ============================================================ */
+    bereich("RAW-Vorschau");
+
+    {
+      // Eine synthetische TIFF-basierte RAW-Datei mit einem ECHTEN JPEG darin.
+      // Der Unit-Test prüft, dass die Offsets richtig gelesen werden; hier geht
+      // es um den Schritt danach: aus Offset und Länge muss ein Blob werden,
+      // den der Browser tatsächlich decodieren kann.
+      const jpeg = await jpegDatei("raw");
+      const jpegBytes = new Uint8Array(await jpeg.arrayBuffer());
+      const jpegAt = 4096;
+      const roh = new Uint8Array(jpegAt + jpegBytes.length + 16);
+
+      const le = (wert) => [wert & 0xff, (wert >> 8) & 0xff, (wert >> 16) & 0xff, (wert >>> 24) & 0xff];
+      roh.set([0x49, 0x49, 42, 0x00], 0); // "II", Magic 42
+      roh.set(le(8), 4); // erstes IFD bei Offset 8
+      roh.set([2, 0], 8); // zwei Einträge
+      roh.set([0x01, 0x02, 4, 0, ...le(1), ...le(jpegAt)], 10); // JpegInterchangeFormat
+      roh.set([0x02, 0x02, 4, 0, ...le(1), ...le(jpegBytes.length)], 22); // ...Length
+      roh.set(le(0), 34); // kein weiteres IFD
+      roh.set(jpegBytes, jpegAt);
+
+      const rawDatei = new File([roh], "bild.dng");
+      const vorschau = await extractRawPreviewBlob(rawDatei);
+      pruefe("aus einer RAW-Datei wird ein Vorschau-Blob geschnitten",
+        vorschau instanceof Blob && vorschau.size === jpegBytes.length,
+        vorschau && vorschau.size);
+
+      if (vorschau) {
+        const url = URL.createObjectURL(vorschau);
+        const masse = await new Promise((r) => {
+          const img = new Image();
+          img.onload = () => r(img.naturalWidth + "x" + img.naturalHeight);
+          img.onerror = () => r(null);
+          img.src = url;
+        });
+        URL.revokeObjectURL(url);
+        pruefe("die Vorschau ist ein decodierbares Bild", masse === "48x32", masse);
+      }
+    }
+
+    {
+      // Ohne Struktur greift die Byte-Suche: dasselbe JPEG, aber ohne TIFF-Kopf.
+      const jpeg = await jpegDatei("scan");
+      const jpegBytes = new Uint8Array(await jpeg.arrayBuffer());
+      const roh = new Uint8Array(2048 + jpegBytes.length + 8);
+      roh.set(jpegBytes, 2048);
+
+      const vorschau = await extractRawPreviewBlob(new File([roh], "unbekannt.orf"));
+      pruefe("ohne Struktur findet die Byte-Suche die Vorschau",
+        vorschau instanceof Blob && vorschau.size === jpegBytes.length, vorschau && vorschau.size);
+    }
+
+    {
+      // Eine Datei ohne jedes Bild darf null liefern, nicht werfen - sonst
+      // scheitert das Laden der ganzen Kachel.
+      const leer = new File([new Uint8Array(4096)], "leer.cr2");
+      let fehler = null;
+      let ergebnis;
+      try { ergebnis = await extractRawPreviewBlob(leer); } catch (e) { fehler = e; }
+      pruefe("eine RAW-Datei ohne Vorschau liefert null statt eines Fehlers",
+        fehler === null && ergebnis === null, fehler ? fehler.message : String(ergebnis));
+    }
+
+    /* ============================================================
        VORHANDENE STICHWORTE (F8)
        ============================================================ */
     bereich("Vorhandene Stichworte");

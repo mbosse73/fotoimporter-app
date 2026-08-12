@@ -9,6 +9,12 @@ const PHOTO_EXTENSIONS = new Set([
   "cr2","nef","arw","dng","raf","orf","rw2","srw" // RAW-Formate
 ]);
 const THUMBNAILABLE_EXTENSIONS = new Set(["jpg","jpeg","png","gif","bmp","webp","heic","heif"]);
+/**
+ * Formate, die der Browser nicht selbst decodieren kann, die aber ein fertiges
+ * JPEG als Vorschau mitbringen (siehe raw-preview.js). Für sie wird dieses
+ * eingebettete Bild herausgeschnitten und angezeigt.
+ */
+const RAW_EXTENSIONS = new Set(["cr2","nef","arw","dng","raf","orf","rw2","srw"]);
 
 const STORAGE_KEY_SETTINGS = "fotoImporter.settings.v1";
 
@@ -1019,7 +1025,22 @@ async function loadOneThumbnail(index, myGeneration) {
   const entry = state.photos[index];
   if (!entry || entry.thumbUrl || entry.thumbFailed) return;
   try {
-    if (THUMBNAILABLE_EXTENSIONS.has(entry.ext)) {
+    if (RAW_EXTENSIONS.has(entry.ext)) {
+      const file = await entry.handle.getFile();
+      if (myGeneration !== thumbnailLoadGeneration) return;
+      const preview = await extractRawPreviewBlob(file);
+      if (myGeneration !== thumbnailLoadGeneration) return;
+      if (!preview) {
+        entry.thumbFailed = true; // RAW ohne auffindbare Vorschau -> grauer Kasten
+      } else {
+        const objectUrl = await downscaleImageToObjectUrl(preview, 320);
+        if (myGeneration !== thumbnailLoadGeneration) {
+          URL.revokeObjectURL(objectUrl);
+          return;
+        }
+        entry.thumbUrl = objectUrl;
+      }
+    } else if (THUMBNAILABLE_EXTENSIONS.has(entry.ext)) {
       const file = await entry.handle.getFile();
       if (myGeneration !== thumbnailLoadGeneration) return;
       // Echtes kleines Thumbnail erzeugen (Canvas-Downscale), statt die Originaldatei
@@ -1034,11 +1055,18 @@ async function loadOneThumbnail(index, myGeneration) {
       }
       entry.thumbUrl = objectUrl;
     } else {
-      entry.thumbFailed = true; // RAW ohne einbettbares Vorschaubild -> grauer Kasten
+      entry.thumbFailed = true; // Format ohne darstellbare Vorschau -> grauer Kasten
     }
   } catch (e) {
     // Fallback: falls Downscaling scheitert (z.B. HEIC vom Browser nicht decodierbar),
     // Originaldatei direkt verwenden statt komplett auf "keine Vorschau" zu gehen.
+    // Für RAW ergibt das keinen Sinn - der Browser kann die Datei nicht anzeigen,
+    // es bliebe ein kaputtes Bildsymbol statt des ehrlichen "keine Vorschau".
+    if (RAW_EXTENSIONS.has(entry.ext)) {
+      entry.thumbFailed = true;
+      if (myGeneration === thumbnailLoadGeneration) updateCellThumb(index);
+      return;
+    }
     try {
       const file = await entry.handle.getFile();
       // Auch hier die Generation prüfen: ohne diese Abfrage hinge die URL an einem
@@ -1050,6 +1078,62 @@ async function loadOneThumbnail(index, myGeneration) {
     }
   }
   if (myGeneration === thumbnailLoadGeneration) updateCellThumb(index);
+}
+
+/* ------------------------------------------------------------
+   RAW-VORSCHAU (F7)
+   ------------------------------------------------------------
+   raw-preview.js sagt, WO in der Datei ein eingebettetes JPEG liegt; hier wird
+   daraus ein Blob. Die Trennung hat einen praktischen Grund: RAW-Dateien sind
+   oft 30-60 MB groß. Für die Strukturanalyse genügt der Dateianfang, und das
+   eigentliche Vorschaubild wird anschließend als schmaler Ausschnitt geholt -
+   statt für jede Kachel im Grid die komplette Datei in den Speicher zu laden.
+   ------------------------------------------------------------ */
+
+/** Wie viel vom Dateianfang für die Strukturanalyse gelesen wird. */
+const RAW_HEADER_BYTES = 256 * 1024;
+/** Wie weit die Byte-Suche als Rückfallweg maximal reicht. */
+const RAW_SCAN_BYTES = 8 * 1024 * 1024;
+/** Wie viele Kandidaten höchstens durchprobiert werden, bevor aufgegeben wird. */
+const RAW_MAX_CANDIDATES = 4;
+
+/**
+ * Schneidet aus einer RAW-Datei das eingebettete Vorschau-JPEG heraus.
+ * Probiert die gefundenen Bereiche der Größe nach durch und liefert den ersten,
+ * der sich tatsächlich decodieren lässt - ein Bereich kann strukturell richtig
+ * aussehen und trotzdem kein brauchbares Bild enthalten.
+ *
+ * @param {File} file
+ * @returns {Promise<Blob|null>} null, wenn keine Vorschau gefunden wurde
+ */
+async function extractRawPreviewBlob(file) {
+  const headerBytes = new Uint8Array(await file.slice(0, RAW_HEADER_BYTES).arrayBuffer());
+  let candidates = findEmbeddedJpegRanges(headerBytes, file.size);
+
+  if (candidates.length === 0) {
+    // Rückfallweg: im Dateianfang nach JPEG-Marken suchen. Bewusst begrenzt -
+    // die eingebettete Vorschau liegt bei allen bekannten Formaten vorne, und
+    // eine 60-MB-Datei komplett zu durchsuchen wäre pro Kachel zu teuer.
+    const scanBytes = file.size <= RAW_SCAN_BYTES
+      ? new Uint8Array(await file.arrayBuffer())
+      : new Uint8Array(await file.slice(0, RAW_SCAN_BYTES).arrayBuffer());
+    candidates = scanForJpegRanges(scanBytes, 0);
+  }
+
+  for (const candidate of candidates.slice(0, RAW_MAX_CANDIDATES)) {
+    const blob = file.slice(candidate.offset, candidate.offset + candidate.length, "image/jpeg");
+    try {
+      // createImageBitmap ist hier gleichzeitig die Prüfung: was sich decodieren
+      // lässt, ist ein Bild. Der Bitmap selbst wird nicht gebraucht - der Aufrufer
+      // skaliert den Blob ohnehin noch herunter.
+      const bitmap = await createImageBitmap(blob);
+      bitmap.close();
+      return blob;
+    } catch (e) {
+      // Nächster Kandidat.
+    }
+  }
+  return null;
 }
 
 /**
@@ -2567,7 +2651,12 @@ function renderLightboxImageElement(entry) {
 async function loadLargePreview(entry) {
   try {
     const file = await entry.handle.getFile();
-    entry.largePreviewUrl = await downscaleImageToObjectUrl(file, 1600);
+    // Bei RAW ist die Bildquelle das eingebettete Vorschau-JPEG. Dessen Auflösung
+    // reicht bei den meisten Kameras an die volle heran - für Sichten und
+    // Beurteilen genügt sie allemal.
+    const source = RAW_EXTENSIONS.has(entry.ext) ? await extractRawPreviewBlob(file) : file;
+    if (!source) return;
+    entry.largePreviewUrl = await downscaleImageToObjectUrl(source, 1600);
     touchLargePreview(entry);
   } catch (e) {
     // Kein Fehler-Toast nötig: das kleine Thumbnail bleibt als Fallback sichtbar.
@@ -2595,10 +2684,14 @@ async function getFullResUrlForLoupe(entry) {
     touchLargePreview(entry);
     return entry.fullResUrl;
   }
-  if (entry.ext !== "jpg" && entry.ext !== "jpeg") return entry.largePreviewUrl || entry.thumbUrl;
+  const istRaw = RAW_EXTENSIONS.has(entry.ext);
+  if (!istRaw && entry.ext !== "jpg" && entry.ext !== "jpeg") return entry.largePreviewUrl || entry.thumbUrl;
   try {
     const file = await entry.handle.getFile();
-    entry.fullResUrl = await downscaleImageToObjectUrl(file, LOUPE_MAX_EDGE);
+    // Bei RAW ist das eingebettete JPEG die höchste verfügbare Auflösung.
+    const source = istRaw ? await extractRawPreviewBlob(file) : file;
+    if (!source) return entry.largePreviewUrl || entry.thumbUrl;
+    entry.fullResUrl = await downscaleImageToObjectUrl(source, LOUPE_MAX_EDGE);
     touchLargePreview(entry);
     return entry.fullResUrl;
   } catch (e) {
