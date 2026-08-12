@@ -507,6 +507,79 @@
     }
 
     /* ============================================================
+       SITZUNG ÜBER EINEN RELOAD (F4)
+       ============================================================ */
+    bereich("Sitzung fortsetzen");
+
+    {
+      const datei = await jpegDatei("s");
+      const fotos = [
+        fotoEintrag("a.jpg", datei, []),
+        fotoEintrag("b.jpg", datei, [], "2026"),
+        fotoEintrag("c.jpg", datei, []),
+      ];
+      const ergebnis = applySavedMarks(fotos, [
+        { relPath: "", name: "a.jpg", action: "move", assignedKeywords: ["Berg"] },
+        { relPath: "2026", name: "b.jpg", action: "delete", assignedKeywords: [] },
+        { relPath: "", name: "weg.jpg", action: "move", assignedKeywords: [] },
+      ]);
+
+      pruefe("Markierungen werden übernommen",
+        fotos[0].action === "move" && fotos[1].action === "delete", fotos.map((f) => f.action).join(","));
+      pruefe("Stichworte werden übernommen", fotos[0].assignedKeywords.join(",") === "Berg");
+      pruefe("nicht gesicherte Fotos bleiben unmarkiert", fotos[2].action === "none");
+      pruefe("verschwundene Fotos werden gezählt, nicht übertragen",
+        ergebnis.uebernommen === 2 && ergebnis.verschwunden === 1,
+        ergebnis.uebernommen + "/" + ergebnis.verschwunden);
+    }
+
+    {
+      // Gleiche Dateinamen in verschiedenen Unterordnern dürfen sich nicht
+      // gegenseitig die Markierung stehlen.
+      const datei = await jpegDatei("s2");
+      const fotos = [
+        fotoEintrag("bild.jpg", datei, []),
+        fotoEintrag("bild.jpg", datei, [], "2026"),
+      ];
+      applySavedMarks(fotos, [{ relPath: "2026", name: "bild.jpg", action: "delete", assignedKeywords: [] }]);
+      pruefe("die Zuordnung berücksichtigt den Unterordner",
+        fotos[0].action === "none" && fotos[1].action === "delete",
+        fotos.map((f) => f.relPath + ":" + f.action).join(","));
+    }
+
+    {
+      // Der Schlüssel muss auch dann eindeutig sein, wenn Ordner- und Dateiname
+      // dieselbe Zeichenfolge unterschiedlich aufteilen.
+      pruefe("der Zuordnungsschlüssel ist eindeutig",
+        photoSessionKey("a", "b/c") !== photoSessionKey("a/b", "c"),
+        photoSessionKey("a", "b/c") + " vs " + photoSessionKey("a/b", "c"));
+    }
+
+    {
+      // Fremddaten: ein gesicherter Stand kann aus einer älteren Version stammen.
+      const datei = await jpegDatei("s3");
+      const fotos = [fotoEintrag("a.jpg", datei, [])];
+      applySavedMarks(fotos, [
+        { relPath: "", name: "a.jpg", action: "unsinn", assignedKeywords: ["gut", "", 42, null] },
+      ]);
+      pruefe("eine unbekannte Aktion wird nicht übernommen", fotos[0].action === "none", fotos[0].action);
+      pruefe("unbrauchbare Stichworte werden aussortiert",
+        fotos[0].assignedKeywords.join(",") === "gut", fotos[0].assignedKeywords.join(","));
+    }
+
+    {
+      // Der Weg durch IndexedDB: sichern, lesen, verwerfen.
+      await saveSessionState({ gesichertAm: 123, markierungen: [{ relPath: "", name: "x.jpg", action: "move" }] });
+      const gelesen = await loadSessionState();
+      pruefe("der gesicherte Stand lässt sich zurücklesen",
+        gelesen && gelesen.gesichertAm === 123 && gelesen.markierungen.length === 1,
+        gelesen && gelesen.gesichertAm);
+
+      await clearSessionState();
+      pruefe("nach dem Verwerfen ist nichts mehr gespeichert", (await loadSessionState()) === null);
+    }
+
+    /* ============================================================
        PROTOKOLL UND RÜCKGÄNGIG (F5)
        ============================================================ */
     bereich("Protokoll");

@@ -68,6 +68,12 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
 #toolbar .path-label{font-size:12px;color:var(--text-2);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 #toolbar .path-value{font-size:12px;color:var(--text-1);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 #toolbar .spacer{flex:1;}
+#resumeBanner{
+  display:flex;align-items:center;gap:10px;padding:9px 14px;font-size:13px;
+  background:var(--accent-dim);border-bottom:1px solid var(--accent);
+}
+#resumeBanner button{flex:none;}
+#resumeBannerText{flex:1;}
 #toolbar .toolbarCheck{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-2);cursor:pointer;white-space:nowrap;}
 #toolbar .toolbarCheck input{margin:0;cursor:pointer;}
 #statusText{font-size:12px;color:var(--text-2);}
@@ -711,6 +717,13 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
     <button id="btnRunActions" class="primary" disabled>Aktionen ausführen ▶</button>
   </div>
 
+  <!-- ============ ANGEBOT: LETZTE SITZUNG FORTSETZEN ============ -->
+  <div id="resumeBanner" class="hidden">
+    <span id="resumeBannerText"></span>
+    <button id="btnResumeSession" class="primary" type="button">Sitzung fortsetzen</button>
+    <button id="btnDiscardSession" type="button">Verwerfen</button>
+  </div>
+
   <!-- ============ GRID ============ -->
   <div id="gridWrap" tabindex="0">
     <div id="emptyState">Noch kein Quellverzeichnis geöffnet.<br>Klicke oben auf „Quellverzeichnis öffnen“, um Fotos zu laden.</div>
@@ -1071,6 +1084,7 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
 <script src="xmp-packet.js"></script>
 <script src="jpeg-segments.js"></script>
 <script src="raw-preview.js"></script>
+<script src="session-store.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

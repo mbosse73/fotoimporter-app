@@ -461,6 +461,7 @@ async function loadPhotosFromSource() {
   recomputeActionCounts(); // neu geladene Fotos haben durchgehend action:'none' -> Zähler auf 0
 
   renderGrid();
+  scheduleSessionSave(); // frisch eingelesen: der bisherige Stand gilt nicht mehr
   setStatus(`${entries.length} Fotos geladen.`);
   updateBottomBar();
   updateRunButtonState();
@@ -1821,6 +1822,7 @@ function selectAll() {
 function applyActionToSelection(action) {
   const targets = getEffectiveTargetIndices();
   if (targets.length === 0) return;
+  scheduleSessionSave();
 
   // Merken, wo der Cursor gerade steht, bevor sich durch den Filter ggf. alles verschiebt
   const cursorPosBefore = positionInVisible(state.cursorIndex);
@@ -1939,6 +1941,7 @@ function removeKeywordsFromTargets(targets, labels) {
  * sichtbar oder verschwinden nicht, obwohl sie jetzt aus dem Filter herausfallen.
  */
 function refreshAfterKeywordChange(targets) {
+  scheduleSessionSave();
   if (state.activeFilter === "hasKeywords" || state.activeFilter === "noKeywords") {
     const cursorPosBefore = positionInVisible(state.cursorIndex);
     rebuildVisibleIndices();
@@ -2800,6 +2803,7 @@ function preloadNeighborThumbnails(index) {
 
 function lightboxSetAction(action) {
   if (lightboxIndex === -1) return;
+  scheduleSessionSave();
   const entry = state.photos[lightboxIndex];
   if (entry.action === "move") actionCounts.move--;
   else if (entry.action === "delete") actionCounts.delete--;
@@ -2983,6 +2987,7 @@ function removeContainerFromLightbox(container) {
  * Menge ggf. neu aufbauen, analog zum Grid-Verhalten.
  */
 function refreshAfterLightboxKeywordChange() {
+  scheduleSessionSave();
   if (state.activeFilter === "hasKeywords" || state.activeFilter === "noKeywords") {
     const posBefore = positionInVisible(lightboxIndex);
     rebuildVisibleIndices();
@@ -4099,6 +4104,8 @@ async function executeActions(eventText, plan) {
 
   renderGrid();
   updateBottomBar();
+  // Der gesicherte Sitzungsstand beschreibt jetzt einen überholten Bestand.
+  scheduleSessionSave();
 
   // Protokoll und Rückgängig-Angebot: erst nach dem Durchgang, und nur, wenn
   // tatsächlich etwas passiert ist.
@@ -4134,6 +4141,192 @@ async function executeActions(eventText, plan) {
     showToast(`Fertig: ${moveTargets.length} verschoben, ${deleteTargets.length} gelöscht.`, "success");
   }
 }
+
+/* ============================================================
+   SITZUNG ÜBER EINEN RELOAD RETTEN (F4)
+   ============================================================
+   Bisher war jede Markierung und jedes zugewiesene Stichwort nach einem Reload
+   verloren - bei einer Sichtung von 800 Fotos ein empfindlicher Verlust, und
+   ein Reload passiert schneller als man denkt.
+
+   Gesichert wird in IndexedDB (siehe session-store.js), weil nur dort
+   Verzeichnis-Handles aufbewahrt werden können. Zwei Eigenheiten prägen den
+   Ablauf:
+
+   1. Ein wiederhergestellter Handle hat KEINE Berechtigung. Der Browser verlangt
+      eine ausdrückliche Bestätigung, und die geht nur aus einer echten
+      Nutzeraktion heraus. Deshalb wird beim Start nur ein Angebot eingeblendet.
+   2. Der Dateibestand kann sich zwischenzeitlich geändert haben. Deshalb wird
+      das Quellverzeichnis frisch eingelesen und die gespeicherten Markierungen
+      werden auf das zugeordnet, was tatsächlich noch da ist. Fotos, die
+      inzwischen fehlen, verschwinden stillschweigend - ihre Markierung auf eine
+      andere Datei zu übertragen wäre die gefährlichere Variante.
+   ============================================================ */
+
+/** Wartezeit, bevor nach einer Änderung gesichert wird. */
+const SESSION_SAVE_DELAY_MS = 800;
+let sessionSaveTimer = null;
+
+/** Schlüssel eines Fotos für die Zuordnung beim Wiederherstellen. */
+function photoSessionKey(relPath, name) {
+  // Als JSON-Paar statt mit einem Trennzeichen: Ordner- und Dateinamen duerfen
+  // fast jedes Zeichen enthalten, ein selbst gewaehlter Trenner waere immer
+  // irgendwann Teil eines echten Namens.
+  return JSON.stringify([relPath, name]);
+}
+
+/**
+ * Sichert den Zustand verzögert. Verzögert, weil beim Durchklicken einer
+ * Fotoserie im Sekundentakt Markierungen fallen - jede einzeln zu schreiben
+ * wäre reine Verschwendung.
+ */
+function scheduleSessionSave() {
+  if (sessionSaveTimer) clearTimeout(sessionSaveTimer);
+  sessionSaveTimer = setTimeout(() => {
+    sessionSaveTimer = null;
+    persistSessionState();
+  }, SESSION_SAVE_DELAY_MS);
+}
+
+/** Schreibt den aktuellen Zustand weg (oder verwirft ihn, wenn es nichts zu retten gibt). */
+async function persistSessionState() {
+  if (!state.sourceDirHandle) return;
+  // Nur Fotos mit Markierung oder Stichworten sichern: alles andere lässt sich
+  // aus dem Verzeichnis neu lesen und würde den Bestand nur aufblähen.
+  const markierungen = state.photos
+    .filter((p) => p.action !== "none" || p.assignedKeywords.length > 0)
+    .map((p) => ({
+      relPath: p.relPath,
+      name: p.name,
+      action: p.action,
+      assignedKeywords: p.assignedKeywords.slice(),
+    }));
+
+  if (markierungen.length === 0) {
+    await clearSessionState();
+    return;
+  }
+
+  await saveSessionState({
+    gesichertAm: Date.now(),
+    sourceHandle: state.sourceDirHandle,
+    targetHandle: state.targetDirHandle,
+    includeSubfolders: state.includeSubfolders,
+    sortKey: state.sortKey,
+    sortDirection: state.sortDirection,
+    markierungen,
+  });
+}
+
+/**
+ * Überträgt gesicherte Markierungen auf eine frisch eingelesene Fotoliste.
+ * Rein rechnend und ohne Dateizugriff - damit prüfbar.
+ *
+ * @param {Array} photos - frisch eingelesene Einträge
+ * @param {Array} markierungen - gesicherter Bestand
+ * @returns {{uebernommen: number, verschwunden: number}}
+ */
+function applySavedMarks(photos, markierungen) {
+  const nachSchluessel = new Map();
+  for (const p of photos) nachSchluessel.set(photoSessionKey(p.relPath, p.name), p);
+
+  let uebernommen = 0;
+  let verschwunden = 0;
+  for (const m of markierungen) {
+    const treffer = nachSchluessel.get(photoSessionKey(m.relPath, m.name));
+    if (!treffer) { verschwunden++; continue; }
+    if (m.action === "move" || m.action === "delete") treffer.action = m.action;
+    if (Array.isArray(m.assignedKeywords)) {
+      treffer.assignedKeywords = m.assignedKeywords.filter((k) => typeof k === "string" && k.trim());
+    }
+    uebernommen++;
+  }
+  return { uebernommen, verschwunden };
+}
+
+/** Fragt die Berechtigung für einen gesicherten Handle ab und fordert sie nötigenfalls an. */
+async function ensureHandlePermission(handle, mode) {
+  if (!handle || typeof handle.queryPermission !== "function") return false;
+  const optionen = { mode };
+  if ((await handle.queryPermission(optionen)) === "granted") return true;
+  return (await handle.requestPermission(optionen)) === "granted";
+}
+
+const resumeBanner = document.getElementById("resumeBanner");
+/** Der beim Start gefundene, noch nicht angenommene Sitzungsstand. */
+let pendingResume = null;
+
+/** Blendet beim Start das Angebot ein, die letzte Sitzung fortzusetzen. */
+async function offerSessionResume() {
+  const record = await loadSessionState();
+  if (!record || !record.sourceHandle || !Array.isArray(record.markierungen) || record.markierungen.length === 0) {
+    return;
+  }
+  pendingResume = record;
+  const anzahl = record.markierungen.length;
+  const alter = new Date(record.gesichertAm || Date.now());
+  document.getElementById("resumeBannerText").textContent =
+    `Unterbrochene Sichtung vom ${formatProtocolTimestamp(alter)}: ` +
+    `${anzahl} Foto(s) mit Markierung oder Stichworten in „${record.sourceHandle.name}“.`;
+  resumeBanner.classList.remove("hidden");
+}
+
+function hideResumeBanner() {
+  resumeBanner.classList.add("hidden");
+  pendingResume = null;
+}
+
+document.getElementById("btnDiscardSession").addEventListener("click", async () => {
+  hideResumeBanner();
+  await clearSessionState();
+  showToast("Gesicherter Sitzungsstand verworfen.", "info", 2500);
+});
+
+document.getElementById("btnResumeSession").addEventListener("click", async () => {
+  const record = pendingResume;
+  if (!record) return;
+  try {
+    // Der Klick ist die Nutzeraktion, aus der heraus der Browser die
+    // Berechtigung überhaupt erst wieder erteilen kann.
+    if (!(await ensureHandlePermission(record.sourceHandle, "readwrite"))) {
+      showToast("Ohne Zugriff auf das Quellverzeichnis lässt sich die Sitzung nicht fortsetzen.", "error", 6000);
+      return;
+    }
+    hideResumeBanner();
+
+    state.sourceDirHandle = record.sourceHandle;
+    document.getElementById("sourcePathLabel").textContent = record.sourceHandle.name;
+    state.includeSubfolders = record.includeSubfolders === true;
+    includeSubfoldersCheckbox.checked = state.includeSubfolders;
+    if (record.sortKey) state.sortKey = record.sortKey;
+    if (record.sortDirection) state.sortDirection = record.sortDirection;
+    updateSortControlsUI();
+
+    await loadPhotosFromSource();
+    const ergebnis = applySavedMarks(state.photos, record.markierungen);
+    recomputeActionCounts();
+    updateAllCellStates();
+    updateBottomBar();
+    updateRunButtonState();
+
+    // Das Zielverzeichnis nur übernehmen, wenn die Berechtigung noch steht -
+    // ein zweiter Dialog direkt hinterher wäre zudringlich. Fehlt sie, wird das
+    // Ziel wie gewohnt beim Ausführen angefordert.
+    if (record.targetHandle && (await record.targetHandle.queryPermission({ mode: "readwrite" })) === "granted") {
+      state.targetDirHandle = record.targetHandle;
+      document.getElementById("targetPathLabel").textContent = record.targetHandle.name;
+      updateRunButtonState();
+    }
+
+    const fehlend = ergebnis.verschwunden > 0
+      ? ` ${ergebnis.verschwunden} Foto(s) aus dem gesicherten Stand sind nicht mehr im Ordner.`
+      : "";
+    showToast(`Sitzung fortgesetzt: ${ergebnis.uebernommen} Markierung(en) übernommen.${fehlend}`, "success", 6000);
+  } catch (e) {
+    console.error("Sitzung konnte nicht fortgesetzt werden", e);
+    showToast("Sitzung konnte nicht fortgesetzt werden: " + e.message, "error", 6000);
+  }
+});
 
 /* ============================================================
    PROTOKOLL & RÜCKGÄNGIG (F5)
@@ -5399,4 +5592,5 @@ window.addEventListener("DOMContentLoaded", () => {
   checkFileSystemAccessSupport();
   updateSortControlsUI();
   gridWrap.focus();
+  offerSessionResume();
 });
