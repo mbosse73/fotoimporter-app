@@ -7,9 +7,10 @@
  * 1. Syntax-Check aller Skripte (fängt Tippfehler in app.js ohne Compiler)
  * 2. Prüfung auf doppelte globale Namen (alle Dateien teilen sich einen Scope,
  *    ein doppelter Top-Level-const bricht die App beim Laden komplett)
- * 3. Prüfung, dass die eingebaute Hilfe zu HANDBUCH.md passt
- * 4. Unit-Tests der Binärformat-Module
- * 5. Browser-Tests der Anwendungslogik (übersprungen, wenn Playwright fehlt)
+ * 3. Ladereihenfolge der Skripte (Top-Level-Code sieht nur zuvor Geladenes)
+ * 4. Prüfung, dass die eingebaute Hilfe zu HANDBUCH.md passt
+ * 5. Unit-Tests der Binärformat-Module
+ * 6. Browser-Tests der Anwendungslogik (übersprungen, wenn Playwright fehlt)
  *
  * Was hier NICHT geprüft werden kann und weiterhin von Hand gehört: ein
  * Durchlauf mit echten Fotodateien. Die Tests ersetzen die File System Access
@@ -40,7 +41,7 @@ function kopf(text) {
 }
 
 /* ---- 1. Syntax ---- */
-kopf("1/5  Syntax-Check");
+kopf("1/6  Syntax-Check");
 const skripte = fs.readdirSync(WURZEL).filter((f) => f.endsWith(".js"));
 const kaputt = [];
 for (const datei of skripte) {
@@ -55,7 +56,7 @@ for (const datei of skripte) {
 melde("Syntax-Check", jeNach(kaputt.length === 0), kaputt.length ? `Fehler in ${kaputt.join(", ")}` : `${skripte.length} Dateien`);
 
 /* ---- 2. Doppelte globale Namen ---- */
-kopf("2/5  Globale Namen");
+kopf("2/6  Globale Namen");
 const zaehler = new Map();
 for (const datei of skripte) {
   const quelle = fs.readFileSync(path.join(WURZEL, datei), "utf8");
@@ -71,8 +72,20 @@ if (doppelt.length === 0) console.log("  ok    keine Dubletten");
 melde("Keine doppelten globalen Namen", jeNach(doppelt.length === 0),
   doppelt.length ? doppelt.map(([n]) => n).join(", ") : `${zaehler.size} Namen geprüft`);
 
-/* ---- 3. Erzeugte Hilfe ---- */
-kopf("3/5  Hilfe gegen HANDBUCH.md");
+/* ---- 3. Ladereihenfolge ---- */
+kopf("3/6  Ladereihenfolge der Skripte");
+// Seit die Anwendung auf mehrere Dateien verteilt ist, werden Funktionen nur
+// noch innerhalb ihrer eigenen Datei nach oben gezogen. Was beim Laden lauft,
+// darf deshalb nichts aus einer spaeter geladenen Datei brauchen.
+const ladeReihenfolge = spawnSync(process.execPath, [path.join(__dirname, "check-load-order.js")], {
+  cwd: WURZEL,
+  encoding: "utf8",
+  stdio: "inherit",
+});
+melde("Ladereihenfolge tragfähig", jeNach(ladeReihenfolge.status === 0));
+
+/* ---- 4. Erzeugte Hilfe ---- */
+kopf("4/6  Hilfe gegen HANDBUCH.md");
 // help-content.js wird aus HANDBUCH.md erzeugt. Beide dürfen nicht auseinander
 // laufen - sonst behauptet die eingebaute Hilfe etwas anderes als das Handbuch.
 const hilfe = spawnSync(process.execPath, [path.join(WURZEL, "tools", "sync-help.js"), "--check"], {
@@ -83,8 +96,8 @@ const hilfe = spawnSync(process.execPath, [path.join(WURZEL, "tools", "sync-help
 melde("Hilfe ist aus HANDBUCH.md erzeugt", jeNach(hilfe.status === 0),
   hilfe.status === 0 ? "" : "node tools/sync-help.js ausführen");
 
-/* ---- 4. Unit-Tests ---- */
-kopf("4/5  Unit-Tests (Binärformat-Module)");
+/* ---- 5. Unit-Tests ---- */
+kopf("5/6  Unit-Tests (Binärformat-Module)");
 // Die Testdateien einzeln übergeben: `node --test tests/` würde das Verzeichnis
 // als Modul zu laden versuchen und daran scheitern.
 const testDateien = fs.readdirSync(__dirname)
@@ -98,8 +111,8 @@ const unit = spawnSync(process.execPath, ["--test", "--test-reporter=spec", ...t
 });
 melde("Unit-Tests", jeNach(unit.status === 0), `${testDateien.length} Dateien`);
 
-/* ---- 5. Browser-Tests ---- */
-kopf("5/5  Browser-Tests (Anwendungslogik)");
+/* ---- 6. Browser-Tests ---- */
+kopf("6/6  Browser-Tests (Anwendungslogik)");
 const browser = spawnSync(process.execPath, [path.join(__dirname, "run-browser.js")], {
   cwd: WURZEL,
   encoding: "utf8",

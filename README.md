@@ -42,7 +42,11 @@ Der übliche Ablauf in Kürze:
    <kbd>V</kbd> zum Verschieben vormerken, <kbd>L</kbd> zum Löschen,
    <kbd>X</kbd> hebt auf
 3. Stichworte vergeben (<kbd>T</kbd> oder Favoriten auf <kbd>1</kbd>–<kbd>9</kbd>)
-4. **Zielverzeichnis wählen** und **Aktionen ausführen**
+4. **Zielverzeichnis wählen** und **Aktionen ausführen** – vorher zeigt eine
+   Vorschau jede geplante Änderung
+
+Markierungen und Stichworte überstehen ein Neuladen der Seite: beim nächsten
+Start wird angeboten, die unterbrochene Sichtung fortzusetzen.
 
 ## Sicherheit beim Verschieben
 
@@ -55,8 +59,14 @@ dieser Prüfungen fehl, bleibt die Quelldatei unangetastet.
 Eine vorhandene Datei im Zielverzeichnis wird nie überschrieben; die Anwendung
 weicht auf einen freien Namen aus.
 
+Jeder Durchgang wird im Zielverzeichnis in `foto-importer-protokoll.txt`
+festgehalten. Verschobene Dateien lassen sich unmittelbar danach wieder
+zurückholen.
+
 Zum **Löschen** dagegen: die File System Access API kennt keinen Papierkorb.
-Gelöschte Dateien sind endgültig weg. Die Anwendung fragt deshalb vorher nach.
+Gelöschte Dateien sind endgültig weg – auch das Protokoll hält dann nur noch
+fest, *was* gelöscht wurde. Die Vorschau vor dem Ausführen listet jede betroffene
+Datei einzeln auf.
 
 ## Unterstützte Formate
 
@@ -67,14 +77,19 @@ Stichworte werden bei **JPEG** direkt in die Datei eingebettet (IPTC-IIM und
 XMP), ohne EXIF, ICC-Profil oder die Bilddaten selbst zu verändern. Für **alle**
 Formate wird zusätzlich eine XMP-Sidecar-Datei neben dem Foto abgelegt.
 
+RAW-Dateien zeigen eine Vorschau: das eingebettete JPEG, das praktisch jede
+Kamera mitliefert, wird herausgeschnitten und angezeigt. Die RAW-Datei selbst
+wird dabei nur gelesen.
+
 ## Tests
 
 ```bash
 node tests/run-all.js
 ```
 
-Führt Syntax-Prüfung, Unit-Tests der Binärformat-Module und die Browser-Tests
-der Anwendungslogik aus. Details und die Einzelbefehle stehen in
+Führt Syntax-Prüfung, die Prüfung der Ladereihenfolge, den Abgleich der
+eingebauten Hilfe mit dem Handbuch, die Unit-Tests der Binärformat-Module und die
+Browser-Tests der Anwendungslogik aus. Details und die Einzelbefehle stehen in
 **[tests/README.md](tests/README.md)**.
 
 ## Für Entwickler
@@ -84,5 +99,5 @@ der Anwendungslogik aus. Details und die Einzelbefehle stehen in
 - **[tests/README.md](tests/README.md)** – Aufbau des Test-Setups
 
 Der Technik-Stand in einem Satz: Vanilla JavaScript, kein Framework, keine
-Abhängigkeiten, kein Build-Schritt. Sieben Skripte werden per `<script src>`
-geladen, das CSS liegt inline in der `index.html`.
+Abhängigkeiten, kein Build-Schritt. Die Skripte werden per `<script src>` in
+fester Reihenfolge geladen, das CSS liegt inline in der `index.html`.

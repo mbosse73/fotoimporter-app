@@ -1088,6 +1088,20 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
 <script src="session-store.js"></script>
 <!-- Erzeugt aus HANDBUCH.md, siehe tools/sync-help.js -->
 <script src="help-content.js"></script>
-<script src="app.js"></script>
+
+<!-- Anwendung. Die Reihenfolge ist relevant: alle Dateien teilen sich einen
+     globalen Scope, und Top-Level-Code einer Datei sieht nur, was zuvor
+     geladen wurde. Siehe CLAUDE.md. -->
+<script src="state.js"></script>
+<script src="source.js"></script>
+<script src="metadata.js"></script>
+<script src="thumbnails.js"></script>
+<script src="grid.js"></script>
+<script src="keywords.js"></script>
+<script src="lightbox.js"></script>
+<script src="naming.js"></script>
+<script src="execute.js"></script>
+<script src="catalog.js"></script>
+<script src="overlays.js"></script>
 </body>
 </html>

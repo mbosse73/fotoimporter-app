@@ -14,10 +14,22 @@ heißt bestanden.
 |---|---|---|
 | 1 | Syntax aller Skripte (`node --check`) | Node |
 | 2 | Keine doppelten globalen Namen | Node |
-| 3 | Unit-Tests der Binärformat-Module | Node |
-| 4 | Browser-Tests der Anwendungslogik | Node + Chromium |
+| 3 | Ladereihenfolge der Skripte | Node |
+| 4 | Eingebaute Hilfe passt zu `HANDBUCH.md` | Node |
+| 5 | Unit-Tests der Binärformat-Module | Node |
+| 6 | Browser-Tests der Anwendungslogik | Node + Chromium |
 
-Schritt 4 wird **übersprungen**, wenn Playwright nicht installiert ist – die
+**Schritt 3** fängt den Fall ab, der durch die Aufteilung der Anwendung auf
+mehrere Dateien möglich wurde: Top-Level-Code, der eine Funktion aus einer erst
+später geladenen Datei benutzt. Gefährlich daran ist nicht der offensichtliche
+Fall – der scheitert beim ersten Start –, sondern der Aufruf in einem Zweig, den
+nur manche Nutzer nehmen.
+
+**Schritt 4** ruft `node tools/sync-help.js --check` auf. `help-content.js` wird
+aus `HANDBUCH.md` erzeugt; laufen beide auseinander, behauptet die Hilfe in der
+App etwas anderes als das Handbuch.
+
+Schritt 6 wird **übersprungen**, wenn Playwright nicht installiert ist – die
 Zusammenfassung sagt das dann ausdrücklich und markiert den Schritt mit `–`
 statt `✓`. „Nicht gelaufen" als „bestanden" zu melden, wäre die gefährlichere
 Lüge. Die Browser-Tests lassen sich in dem Fall von Hand ausführen (siehe
@@ -35,7 +47,7 @@ node --test tests/*.test.js
 ```
 
 Decken die Module ab, die auf Binärformaten arbeiten: `exif.js`, `iptc-iim.js`,
-`photoshop-irb.js`, `xmp-packet.js`, `jpeg-segments.js`. Sie laufen mit
+`photoshop-irb.js`, `xmp-packet.js`, `jpeg-segments.js`, `raw-preview.js`. Sie laufen mit
 `node:test` und `node:assert` – beides Bordmittel, **keine Abhängigkeiten**. Die
 Module exportieren am Dateiende per `module.exports` und lassen sich deshalb
 ohne jede Anpassung per `require()` laden.
@@ -52,8 +64,8 @@ und das Repository soll keine Megabyte an Beispielfotos mitschleppen.
 
 ### Browser-Tests – `browser.html` + `browser-suite.js`
 
-`app.js` lässt sich nicht in Node laden – es greift beim Start auf `document`
-zu. Diese Tests laufen deshalb im Browser.
+Die Anwendungsdateien lassen sich nicht in Node laden – sie greifen beim Start
+auf `document` zu. Diese Tests laufen deshalb im Browser.
 
 **Von Hand:**
 
@@ -86,12 +98,12 @@ PLAYWRIGHT_CHROMIUM=/pfad/zu/chromium node tests/run-browser.js
 #### Warum der Umweg über ein iframe
 
 `browser.html` lädt die echte `index.html` in ein iframe und injiziert
-`browser-suite.js` **in dieses Fenster**. Grund: `app.js` ist ein klassisches
-Skript, dessen Zustand (`state`, `currentFormatTokens`, …) als
+`browser-suite.js` **in dieses Fenster**. Grund: die Anwendungsdateien sind
+klassische Skripte, deren Zustand (`state`, `currentFormatTokens`, …) als
 Top-Level-`const`/`let` im globalen lexikalischen Scope liegt und deshalb *nicht*
 über `window.` erreichbar ist. Ein Skript, das im selben Realm nachgeladen wird,
-sieht diese Bindungen dagegen ganz normal – ohne dass an `app.js` eine
-Test-Hintertür eingebaut werden müsste.
+sieht diese Bindungen dagegen ganz normal – ohne dass eine Test-Hintertür
+eingebaut werden müsste.
 
 #### Attrappen statt echter Dateien
 
@@ -101,9 +113,11 @@ schreiben, zurücklesen, prüfen, Quelldatei löschen –, aber gegen nachgebild
 sind diese Tests gefahrlos wiederholbar: der echte Pfad löscht endgültig.
 
 Abgedeckt sind unter anderem der Überschreibschutz, der Sidecar-Fallback, die
-Bereinigung von Dateinamen, die Löschabfrage, der Vorschau-Cache sowie die
-Gegenproben – eine verfälschte Zieldatei und eine verfälschte Sidecar-Datei
-müssen das Löschen der Quelle *verhindern*.
+Bereinigung von Dateinamen, die Löschabfrage, der Vorschau-Cache, der
+Trockenlauf, die Zielunterordner, das Protokoll, das Rückgängig und das
+Fortsetzen einer Sitzung – sowie die Gegenproben: eine verfälschte Zieldatei,
+eine verfälschte Sidecar-Datei und ein misslungenes Zurückschreiben müssen das
+Löschen jeweils *verhindern*.
 
 ## Was die Tests NICHT abdecken
 
