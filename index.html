@@ -68,6 +68,8 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
 #toolbar .path-label{font-size:12px;color:var(--text-2);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 #toolbar .path-value{font-size:12px;color:var(--text-1);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 #toolbar .spacer{flex:1;}
+#toolbar .toolbarCheck{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-2);cursor:pointer;white-space:nowrap;}
+#toolbar .toolbarCheck input{margin:0;cursor:pointer;}
 #statusText{font-size:12px;color:var(--text-2);}
 
 /* ---------- Grid ---------- */
@@ -137,6 +139,9 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
   max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
 .miniKwChipMore{background:rgba(91,158,255,.35);border-color:var(--accent);font-weight:700;}
+/* Noch nicht übernommene Stichworte aus der Datei – gestrichelt und unbunt,
+   damit sie sich klar von tatsächlich zugewiesenen unterscheiden. */
+.miniKwChipExisting{background:transparent;border-style:dashed;color:var(--text-2);}
 
 #emptyState{
   color:var(--text-2);text-align:center;padding:60px 20px;font-size:14px;
@@ -619,6 +624,10 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
 }
 .assignContainerChip.assigned{background:var(--accent-dim);border-color:var(--accent);}
 .assignContainerChip .chipCount{color:var(--text-2);font-size:10.5px;}
+/* Im Foto gefundene Stichworte: gestrichelter Rand als Hinweis, dass sie noch
+   nicht zugewiesen sind, sondern nur zur Übernahme angeboten werden. */
+.existingKeywordChip{border-style:dashed;}
+.existingKeywordChip.assigned{border-style:solid;}
 
 .assignKeywordResults{max-height:180px;overflow-y:auto;margin-top:8px;}
 .assignKeywordItem{
@@ -640,6 +649,9 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
     <div class="group">
       <button id="btnOpenSource">📂 Quellverzeichnis öffnen</button>
       <span class="path-value" id="sourcePathLabel">kein Ordner gewählt</span>
+      <label class="toolbarCheck" title="Auch Fotos in Unterordnern des Quellverzeichnisses einlesen">
+        <input type="checkbox" id="includeSubfolders"> Unterordner
+      </label>
     </div>
     <div class="sep"></div>
     <div class="group">
@@ -734,6 +746,10 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
       <div class="lbPanelSection">
         <div class="lbPanelTitle">Zugewiesene Stichworte</div>
         <div id="lbAssignedChips" class="lbAssignedChips"></div>
+      </div>
+      <div class="lbPanelSection hidden" id="lbExistingSection">
+        <div class="lbPanelTitle">Im Foto gefundene Stichworte</div>
+        <div id="lbExistingRow" class="assignChipRow"></div>
       </div>
       <div class="lbPanelSection">
         <div class="lbPanelTitle">Favoriten (Taste 1–9)</div>
@@ -917,6 +933,11 @@ hr{border:none;border-top:1px solid var(--line);margin:12px 0;}
   <div class="modal" id="keywordAssignModal">
     <h2>🏷️ Stichworte zuweisen</h2>
     <div class="subtitle" id="keywordAssignTargetInfo"></div>
+
+    <div class="assignSection hidden" id="assignExistingSection">
+      <div class="assignSectionTitle">Im Foto gefundene Stichworte</div>
+      <div class="assignChipRow" id="assignExistingRow"></div>
+    </div>
 
     <div class="assignSection">
       <div class="assignSectionTitle">Favoriten (Taste 1–9)</div>

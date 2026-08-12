@@ -38,8 +38,30 @@
   class AttrappenVerzeichnis {
     constructor(name) {
       this.name = name;
+      this.kind = "directory";
       this.files = new Map();
+      this.unterordner = new Map(); // Name -> AttrappenVerzeichnis
       this.loeschenSchlaegtFehl = new Set(); // Dateinamen, deren Löschen scheitern soll
+    }
+
+    /** Wie die echte API: liefert [name, handle] für Dateien UND Unterordner. */
+    async *entries() {
+      for (const [name, datei] of this.files) {
+        yield [name, { kind: "file", name, async getFile() { return datei; } }];
+      }
+      for (const [name, ordner] of this.unterordner) yield [name, ordner];
+    }
+
+    async getDirectoryHandle(name, options) {
+      if (!this.unterordner.has(name)) {
+        if (!options || !options.create) {
+          const fehler = new Error(`Ordner "${name}" nicht gefunden`);
+          fehler.name = "NotFoundError";
+          throw fehler;
+        }
+        this.unterordner.set(name, new AttrappenVerzeichnis(name));
+      }
+      return this.unterordner.get(name);
     }
 
     async getFileHandle(name, options) {
@@ -92,12 +114,21 @@
     return new File([blob], "quelle.jpg", { type: "image/jpeg" });
   }
 
-  /** Baut einen PhotoEntry, wie ihn loadPhotosFromSource() erzeugen würde. */
-  function fotoEintrag(name, datei, stichworte) {
+  /**
+   * Baut einen PhotoEntry, wie ihn loadPhotosFromSource() erzeugen würde.
+   * `dirHandle` bleibt offen und wird in durchgang() auf das Quellverzeichnis
+   * gesetzt - genau wie in der App, wo der enthaltende Ordner beim Einlesen
+   * feststeht. Für Tests mit Unterordnern wird er vorher gezielt gesetzt.
+   */
+  function fotoEintrag(name, datei, stichworte, relPath) {
     return {
       name,
       ext: name.slice(name.lastIndexOf(".") + 1).toLowerCase(),
       handle: { async getFile() { return datei; } },
+      dirHandle: null,
+      relPath: relPath || "",
+      existingKeywords: null,
+      existingDescription: null,
       thumbUrl: null,
       largePreviewUrl: null,
       fullResUrl: null,
@@ -112,6 +143,7 @@
 
   /** Setzt den App-Zustand auf die Attrappen und führt einen kompletten Durchgang aus. */
   async function durchgang(eintraege, quelle, ziel, ereignisText) {
+    for (const e of eintraege) if (!e.dirHandle) e.dirHandle = quelle;
     state.photos = eintraege;
     state.sourceDirHandle = quelle;
     state.targetDirHandle = ziel;
@@ -465,6 +497,135 @@
         verbleibend.length === 1 && verbleibend[0] === "foto.jpg", verbleibend.join(","));
       pruefe("die Aktion des gescheiterten Fotos wird zurückgesetzt",
         state.photos[0] && state.photos[0].action === "none", state.photos[0] && state.photos[0].action);
+    }
+
+    /* ============================================================
+       VORHANDENE STICHWORTE (F8)
+       ============================================================ */
+    bereich("Vorhandene Stichworte");
+
+    {
+      // Round-Trip: ein JPEG mit eingebetteten Metadaten muss beim Einlesen
+      // genau diese Stichworte wieder hergeben.
+      const datei = await jpegDatei("meta");
+      const roh = new Uint8Array(await datei.arrayBuffer());
+      const deps = { buildIptcIimBlock, buildIrbForIptc, parseIrbs, buildXmpPacket };
+      const beschrieben = writeKeywordsToJpeg(roh, ["Alpen", "Winter"], deps, "Skiurlaub");
+
+      const gelesen = readExistingKeywords(beschrieben);
+      pruefe("eingebettete Stichworte werden gefunden",
+        gelesen.keywords.join(",") === "Alpen,Winter", gelesen.keywords.join(","));
+      pruefe("die eingebettete Beschreibung wird gefunden",
+        gelesen.description === "Skiurlaub", gelesen.description);
+
+      const ohne = readExistingKeywords(roh);
+      pruefe("ein Foto ohne Metadaten liefert eine leere Liste",
+        ohne.keywords.length === 0 && ohne.description === null, ohne.keywords.length + "/" + ohne.description);
+
+      // Kein Absturz bei Datenmüll: das Einlesen darf nicht am ersten kaputten
+      // Foto einer Speicherkarte scheitern.
+      const muell = readExistingKeywords(new Uint8Array([1, 2, 3, 4, 5]));
+      pruefe("unlesbare Daten führen zu einer leeren Liste statt zu einem Fehler",
+        muell.keywords.length === 0);
+    }
+
+    {
+      // XMP hat Vorrang, weil IPTC auf 64 Byte kürzt.
+      const datei = await jpegDatei("lang");
+      const roh = new Uint8Array(await datei.arrayBuffer());
+      const deps = { buildIptcIimBlock, buildIrbForIptc, parseIrbs, buildXmpPacket };
+      const langes = "L" + "a".repeat(90);
+      const beschrieben = writeKeywordsToJpeg(roh, [langes], deps, null);
+      const gelesen = readExistingKeywords(beschrieben);
+      pruefe("bei langen Stichworten gewinnt die ungekürzte XMP-Fassung",
+        gelesen.keywords[0] === langes, gelesen.keywords[0] && gelesen.keywords[0].length);
+    }
+
+    {
+      // Die Zusammenstellung für die Oberfläche: Häufigkeit über die Auswahl.
+      const datei = await jpegDatei("z");
+      const a = fotoEintrag("a.jpg", datei, []);
+      const b = fotoEintrag("b.jpg", datei, ["Berg"]);
+      a.existingKeywords = ["Berg", "See"];
+      b.existingKeywords = ["Berg"];
+      const vorher = state.photos;
+      state.photos = [a, b];
+      const gefunden = collectExistingKeywords([0, 1]);
+      state.photos = vorher;
+
+      pruefe("gefundene Stichworte werden nach Häufigkeit sortiert",
+        gefunden.map((f) => f.label + ":" + f.count).join(",") === "Berg:2,See:1",
+        gefunden.map((f) => f.label + ":" + f.count).join(","));
+      pruefe("bereits vollständig zugewiesene werden als solche erkannt",
+        gefunden[0].assignedToAll === false && gefunden[1].assignedToAll === false);
+    }
+
+    /* ============================================================
+       UNTERORDNER DER QUELLE (F6)
+       ============================================================ */
+    bereich("Unterordner der Quelle");
+
+    {
+      // Der Kern von F6: gelöscht werden muss im ENTHALTENDEN Ordner. Würde
+      // weiterhin state.sourceDirHandle verwendet, bliebe die Quelldatei im
+      // Unterordner liegen - und wäre gleichzeitig schon ins Ziel kopiert.
+      const quelle = new AttrappenVerzeichnis("quelle");
+      const unter = new AttrappenVerzeichnis("2024");
+      const ziel = new AttrappenVerzeichnis("ziel");
+      const oben = await jpegDatei("o");
+      const unten = await jpegDatei("u");
+      quelle.files.set("oben.jpg", oben);
+      unter.files.set("unten.jpg", unten);
+
+      const e1 = fotoEintrag("oben.jpg", oben, []); e1.action = "move";
+      const e2 = fotoEintrag("unten.jpg", unten, [], "2024"); e2.action = "move";
+      e2.dirHandle = unter;
+      namensschema([{ type: "counter" }]);
+      await durchgang([e1, e2], quelle, ziel, "");
+
+      pruefe("die Datei aus dem Unterordner wird dort gelöscht",
+        !unter.files.has("unten.jpg"), unter.namen().join(","));
+      pruefe("die Datei aus der obersten Ebene wird dort gelöscht",
+        !quelle.files.has("oben.jpg"), quelle.namen().join(","));
+      pruefe("beide Fotos liegen im Ziel", ziel.namen().join(",") === "001.jpg,002.jpg", ziel.namen().join(","));
+    }
+
+    {
+      // Der Anzeigename trägt den Pfad, sonst sind gleichnamige Dateien aus
+      // verschiedenen Unterordnern in der Oberfläche nicht unterscheidbar.
+      const datei = await jpegDatei("n");
+      const ohne = fotoEintrag("bild.jpg", datei, []);
+      const mit = fotoEintrag("bild.jpg", datei, [], "2024/Mai");
+      pruefe("ohne Unterordner bleibt der reine Dateiname",
+        photoDisplayName(ohne) === "bild.jpg", photoDisplayName(ohne));
+      pruefe("mit Unterordner wird der Pfad vorangestellt",
+        photoDisplayName(mit) === "2024/Mai/bild.jpg", photoDisplayName(mit));
+    }
+
+    {
+      // Einlesen über Attrappen: Unterordner nur auf Wunsch, versteckte nie.
+      const wurzel = new AttrappenVerzeichnis("wurzel");
+      const jahr = new AttrappenVerzeichnis("2024");
+      const versteckt = new AttrappenVerzeichnis(".trash");
+      wurzel.files.set("a.jpg", new File([], "a.jpg"));
+      wurzel.files.set("liesmich.txt", new File([], "liesmich.txt"));
+      jahr.files.set("b.jpg", new File([], "b.jpg"));
+      versteckt.files.set("c.jpg", new File([], "c.jpg"));
+      wurzel.unterordner.set("2024", jahr);
+      wurzel.unterordner.set(".trash", versteckt);
+
+      const flach = [];
+      await collectPhotoEntries(wurzel, "", false, 0, flach);
+      pruefe("ohne Schalter bleibt es bei der obersten Ebene",
+        flach.map((e) => photoDisplayName(e)).join(",") === "a.jpg", flach.map((e) => photoDisplayName(e)).join(","));
+
+      const tief = [];
+      await collectPhotoEntries(wurzel, "", true, 0, tief);
+      pruefe("mit Schalter kommen Unterordner dazu, versteckte nicht",
+        tief.map((e) => photoDisplayName(e)).sort().join(",") === "2024/b.jpg,a.jpg",
+        tief.map((e) => photoDisplayName(e)).sort().join(","));
+      pruefe("der enthaltende Ordner wird am Eintrag vermerkt",
+        tief.every((e) => e.dirHandle === (e.relPath === "2024" ? jahr : wurzel)));
     }
 
     /* ============================================================

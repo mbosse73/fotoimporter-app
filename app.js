@@ -21,6 +21,8 @@ const STORAGE_KEY_SETTINGS = "fotoImporter.settings.v1";
  *   activeFilter: 'all'|'move'|'delete'|'none'|'hasKeywords'|'noKeywords',
  *   sortKey: 'name'|'fileDate'|'captureDate'|'fileSize',
  *   sortDirection: 'asc'|'desc',
+ *   includeSubfolders: boolean,
+ *   lastRunLog: Object|null,
  * }} */
 const state = {
   sourceDirHandle: null,
@@ -31,12 +33,21 @@ const state = {
   activeFilter: "all",
   sortKey: "captureDate", // bisheriges Standardverhalten beibehalten
   sortDirection: "asc",
+  includeSubfolders: false,
+  // Protokoll des zuletzt ausgeführten Durchgangs (siehe PROTOKOLL & RÜCKGÄNGIG).
+  // Nur für die aktuelle Sitzung; die Protokolldatei im Ziel überlebt den Reload.
+  lastRunLog: null,
 };
 
 /**
  * @typedef {Object} PhotoEntry
  * @property {string} name
  * @property {FileSystemFileHandle} handle
+ * @property {FileSystemDirectoryHandle} dirHandle - Ordner, in dem die Datei LIEGT.
+ *   Nicht zwingend das Quellverzeichnis: beim Einlesen mit Unterordnern muss zum
+ *   Löschen der Handle des tatsächlich enthaltenden Ordners verwendet werden.
+ * @property {string} relPath - Pfad des enthaltenden Ordners relativ zur Quelle
+ *   ("" für Dateien direkt im Quellverzeichnis), mit "/" als Trenner
  * @property {string} ext
  * @property {string|null} thumbUrl - kleines Grid-Thumbnail (schnell, downscaled)
  * @property {string|null} largePreviewUrl - größere Vorschau für den Leuchtkasten (bei Bedarf nachgeladen)
@@ -46,6 +57,9 @@ const state = {
  * @property {Date|null} fileDate - Datei-Änderungsdatum (lastModified), unabhängig vom Aufnahmedatum
  * @property {number|null} fileSize - Dateigröße in Bytes
  * @property {'none'|'move'|'delete'} action
+ * @property {string[]|null} existingKeywords - im Foto bereits vorhandene Stichworte
+ *   (IPTC/XMP), rein informativ; null = noch nicht gelesen oder Format ohne Metadaten
+ * @property {string|null} existingDescription - vorhandene Beschreibung, dito
  * @property {string[]} assignedKeywords - zugewiesene Stichwort-Labels (als Text, nicht als
  *   Katalog-ID gespeichert: ein einmal zugewiesenes Stichwort bleibt am Foto erhalten,
  *   auch wenn es später aus dem Katalog gelöscht oder umbenannt wird)
@@ -75,23 +89,46 @@ function createEmptyKeywordCatalog() {
   };
 }
 
+function createDefaultSettings() {
+  return {
+    presets: {},
+    lastPreset: null,
+    keywordCatalog: createEmptyKeywordCatalog(),
+    includeSubfolders: false,
+  };
+}
+
+/**
+ * Bringt ein geladenes oder importiertes Einstellungsobjekt auf die erwartete
+ * Form. Bewusst EINE Stelle für beide Wege: der Import liest eine beliebige
+ * fremde JSON-Datei, und die Fassung im localStorage kann aus einer älteren
+ * Programmversion stammen. Ein neues Einstellungsfeld gehört hierher - sonst
+ * fehlt es genau auf dem Weg, den man beim Ergänzen nicht im Blick hatte.
+ * @param {any} parsed
+ * @returns {Object}
+ */
+function normalizeSettings(parsed) {
+  if (!parsed || typeof parsed !== "object") return createDefaultSettings();
+  parsed.presets = normalizePresets(parsed.presets);
+  if (!parsed.keywordCatalog || typeof parsed.keywordCatalog !== "object") {
+    parsed.keywordCatalog = createEmptyKeywordCatalog();
+  }
+  normalizeKeywordCatalog(parsed.keywordCatalog);
+  if (typeof parsed.lastPreset !== "string" || !parsed.presets[parsed.lastPreset]) {
+    parsed.lastPreset = null;
+  }
+  parsed.includeSubfolders = parsed.includeSubfolders === true;
+  return parsed;
+}
+
 function loadSettings() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_SETTINGS);
-    if (!raw) return { presets: {}, lastPreset: null, keywordCatalog: createEmptyKeywordCatalog() };
-    const parsed = JSON.parse(raw);
-    parsed.presets = normalizePresets(parsed.presets);
-    if (!parsed.keywordCatalog || typeof parsed.keywordCatalog !== "object") {
-      parsed.keywordCatalog = createEmptyKeywordCatalog();
-    }
-    normalizeKeywordCatalog(parsed.keywordCatalog);
-    if (typeof parsed.lastPreset !== "string" || !parsed.presets[parsed.lastPreset]) {
-      parsed.lastPreset = null;
-    }
-    return parsed;
+    if (!raw) return createDefaultSettings();
+    return normalizeSettings(JSON.parse(raw));
   } catch (e) {
     console.warn("Einstellungen konnten nicht geladen werden, verwende Standard.", e);
-    return { presets: {}, lastPreset: null, keywordCatalog: createEmptyKeywordCatalog() };
+    return createDefaultSettings();
   }
 }
 
@@ -232,10 +269,38 @@ function checkFileSystemAccessSupport() {
    QUELLVERZEICHNIS ÖFFNEN & FOTOS LADEN
    ============================================================ */
 
+const includeSubfoldersCheckbox = document.getElementById("includeSubfolders");
+state.includeSubfolders = appSettings.includeSubfolders === true;
+includeSubfoldersCheckbox.checked = state.includeSubfolders;
+
+includeSubfoldersCheckbox.addEventListener("change", async () => {
+  state.includeSubfolders = includeSubfoldersCheckbox.checked;
+  appSettings.includeSubfolders = state.includeSubfolders;
+  saveSettings(appSettings);
+  // Umschalten ändert die Menge der Fotos, also neu einlesen - aber nicht ungefragt
+  // über bereits vergebene Markierungen und Stichworte hinweg, die dabei verloren gingen.
+  if (!state.sourceDirHandle) return;
+  const marked = state.photos.filter((p) => p.action !== "none" || p.assignedKeywords.length > 0).length;
+  if (marked > 0 && !confirm(
+    `Das Quellverzeichnis wird neu eingelesen. ${marked} bereits vorgenommene Markierung(en)/Zuweisung(en) gehen dabei verloren.\n\nFortfahren?`
+  )) {
+    state.includeSubfolders = !state.includeSubfolders;
+    includeSubfoldersCheckbox.checked = state.includeSubfolders;
+    appSettings.includeSubfolders = state.includeSubfolders;
+    saveSettings(appSettings);
+    return;
+  }
+  await loadPhotosFromSource();
+});
+
 document.getElementById("btnOpenSource").addEventListener("click", async () => {
   if (!checkFileSystemAccessSupport()) return;
   try {
-    const dirHandle = await window.showDirectoryPicker({ id: "photoSource", mode: "read" });
+    // "readwrite": aus dem Quellverzeichnis werden Dateien gelöscht (verschieben =
+    // kopieren + löschen). Mit "read" würde removeEntry() erst beim Ausführen
+    // scheitern - also lieber gleich beim Öffnen fragen, wenn der Zusammenhang
+    // für den Nutzer noch erkennbar ist.
+    const dirHandle = await window.showDirectoryPicker({ id: "photoSource", mode: "readwrite" });
     state.sourceDirHandle = dirHandle;
     document.getElementById("sourcePathLabel").textContent = dirHandle.name;
     await loadPhotosFromSource();
@@ -262,33 +327,77 @@ document.getElementById("btnOpenTarget").addEventListener("click", async () => {
   }
 });
 
+/**
+ * Obergrenze für die Rekursionstiefe beim Einlesen mit Unterordnern. Die File
+ * System Access API kennt keine Symlinks, eine Endlosschleife ist also nicht zu
+ * befürchten - die Grenze schützt vor versehentlich gewählten Wurzelverzeichnissen
+ * mit sehr tiefen Bäumen, bei denen das Einlesen sonst minutenlang liefe.
+ */
+const MAX_SUBFOLDER_DEPTH = 8;
+
+/** Baut einen PhotoEntry aus einem gefundenen Datei-Handle. */
+function createPhotoEntry(name, handle, dirHandle, relPath) {
+  return {
+    name,
+    handle,
+    dirHandle,
+    relPath,
+    ext: getExtension(name),
+    thumbUrl: null,
+    largePreviewUrl: null,
+    fullResUrl: null,
+    thumbFailed: false,
+    captureDate: null,
+    fileDate: null,
+    fileSize: null,
+    action: "none",
+    existingKeywords: null,
+    existingDescription: null,
+    assignedKeywords: [],
+  };
+}
+
+/**
+ * Sammelt alle unterstützten Fotodateien eines Ordners ein, auf Wunsch auch aus
+ * dessen Unterordnern. Versteckte Ordner (Name beginnt mit einem Punkt) werden
+ * ausgelassen: dort liegen auf Speicherkarten und externen Platten typischerweise
+ * Papierkorb- und Indexdaten des Betriebssystems, keine zu sichtenden Fotos.
+ */
+async function collectPhotoEntries(dirHandle, relPath, recurse, depth, sink) {
+  const subDirs = [];
+  for await (const [name, handle] of dirHandle.entries()) {
+    if (handle.kind === "directory") {
+      if (recurse && depth < MAX_SUBFOLDER_DEPTH && !name.startsWith(".")) {
+        subDirs.push([name, handle]);
+      }
+      continue;
+    }
+    if (!PHOTO_EXTENSIONS.has(getExtension(name))) continue;
+    sink.push(createPhotoEntry(name, handle, dirHandle, relPath));
+  }
+  // Unterordner erst nach den Dateien der aktuellen Ebene, und alphabetisch: die
+  // Reihenfolge von entries() ist nicht garantiert, und ein reproduzierbarer
+  // Einlesevorgang ist beim Vergleich zweier Durchläufe viel wert.
+  subDirs.sort((a, b) => a[0].localeCompare(b[0], "de"));
+  for (const [name, handle] of subDirs) {
+    await collectPhotoEntries(handle, relPath ? `${relPath}/${name}` : name, recurse, depth + 1, sink);
+  }
+}
+
 async function loadPhotosFromSource() {
   setStatus("Lade Verzeichnis…");
   const dirHandle = state.sourceDirHandle;
   const entries = [];
 
-  for await (const [name, handle] of dirHandle.entries()) {
-    if (handle.kind !== "file") continue; // nur Dateien direkt im Ordner, keine Unterordner
-    const ext = getExtension(name);
-    if (!PHOTO_EXTENSIONS.has(ext)) continue;
-    entries.push({
-      name,
-      handle,
-      ext,
-      thumbUrl: null,
-      largePreviewUrl: null,
-      fullResUrl: null,
-      thumbFailed: false,
-      captureDate: null,
-      fileDate: null,
-      fileSize: null,
-      action: "none",
-      assignedKeywords: [],
-    });
-  }
+  await collectPhotoEntries(dirHandle, "", state.includeSubfolders, 0, entries);
 
   if (entries.length === 0) {
-    showToast("Keine unterstützten Fotodateien im gewählten Ordner gefunden.", "info");
+    showToast(
+      state.includeSubfolders
+        ? "Keine unterstützten Fotodateien im gewählten Ordner und seinen Unterordnern gefunden."
+        : "Keine unterstützten Fotodateien im gewählten Ordner gefunden.",
+      "info"
+    );
   }
 
   setStatus(`Lese Aufnahmedaten (${entries.length} Dateien)…`);
@@ -302,9 +411,15 @@ async function loadPhotosFromSource() {
       entry.fileSize = file.size;
 
       let date = null;
-      if (THUMBNAILABLE_EXTENSIONS.has(entry.ext) && (entry.ext === "jpg" || entry.ext === "jpeg")) {
+      if (DIRECT_WRITE_EXTENSIONS.has(entry.ext)) {
+        // Eine Leseoperation für beides: Aufnahmedatum und die bereits im Foto
+        // hinterlegten Stichworte. Die Datei ein zweites Mal zu lesen, nur um
+        // die Metadaten zu holen, würde das Einlesen großer Ordner verdoppeln.
         const buf = await file.arrayBuffer();
         date = readExifDate(buf);
+        const vorhanden = readExistingKeywords(new Uint8Array(buf));
+        entry.existingKeywords = vorhanden.keywords;
+        entry.existingDescription = vorhanden.description;
       }
       if (!date) {
         date = entry.fileDate;
@@ -334,6 +449,15 @@ async function loadPhotosFromSource() {
   // Thumbnails werden lazy per IntersectionObserver geladen (ausgelöst in renderGrid()),
   // nicht mehr pauschal für alle Fotos auf einmal – das hält den Start bei großen
   // Ordnern (hunderte/tausende Fotos) schnell.
+}
+
+/**
+ * Anzeigename eines Fotos: mit Unterordner-Pfad, sobald einer vorhanden ist.
+ * Beim Einlesen mit Unterordnern können mehrere Dateien gleich heißen - ohne den
+ * Pfad wäre in der Oberfläche nicht mehr erkennbar, welche gemeint ist.
+ */
+function photoDisplayName(entry) {
+  return entry.relPath ? `${entry.relPath}/${entry.name}` : entry.name;
 }
 
 function getExtension(filename) {
@@ -371,7 +495,9 @@ function sortPhotoEntries(entries, sortKey, sortDirection) {
     let cmp = 0;
     switch (sortKey) {
       case "name":
-        cmp = a.name.localeCompare(b.name, "de", { numeric: true, sensitivity: "base" });
+        // Über den Anzeigenamen sortieren, damit beim Einlesen mit Unterordnern
+        // die Dateien eines Ordners beieinander stehen statt sich zu vermischen.
+        cmp = photoDisplayName(a).localeCompare(photoDisplayName(b), "de", { numeric: true, sensitivity: "base" });
         break;
       case "fileDate":
         cmp = (a.fileDate ? a.fileDate.getTime() : 0) - (b.fileDate ? b.fileDate.getTime() : 0);
@@ -499,6 +625,77 @@ async function tryWriteKeywordsIntoJpeg(file, keywords, description) {
 }
 
 /**
+ * Liest die Stichwort-Metadaten aus einem JPEG-Puffer: den IPTC-IIM-Block aus
+ * dem Photoshop-IRB (APP13) und das XMP-Paket (APP1). Beide Rückgabewerte sind
+ * null, wenn das jeweilige Segment fehlt - was der Normalfall für Fotos ist,
+ * die noch nie verschlagwortet wurden.
+ *
+ * Eine Stelle für beides, weil dieselbe Zerlegung an drei Punkten gebraucht
+ * wird: beim Konsistenz-Check nach dem Schreiben, bei der Prüfung der Zieldatei
+ * vor dem Löschen der Quelle und beim Einlesen bereits vorhandener Stichworte.
+ *
+ * @param {Uint8Array} buffer
+ * @returns {{iptc: {keywords: string[], description: string|null}|null,
+ *            xmp: {keywords: string[], description: string|null}|null}}
+ */
+function readJpegMetadata(buffer) {
+  const { segments } = parseJpegSegments(buffer);
+  let iptc = null;
+  let xmp = null;
+
+  for (const seg of segments) {
+    if (seg.marker === 0xed) {
+      const prefix = readAsciiPrefix(buffer, seg.start + 4, PHOTOSHOP_PREAMBLE.length);
+      if (prefix === PHOTOSHOP_PREAMBLE) {
+        const irbBuffer = buffer.slice(seg.start + 4 + PHOTOSHOP_PREAMBLE.length, seg.end);
+        for (const irb of parseIrbs(irbBuffer)) {
+          if (irb.resourceId === 0x0404) iptc = parseIptcIimData(irb.data);
+        }
+      }
+    } else if (seg.marker === 0xe1) {
+      const prefix = readAsciiPrefix(buffer, seg.start + 4, XMP_PREAMBLE.length);
+      if (prefix === XMP_PREAMBLE) {
+        const xmpText = new TextDecoder("utf-8").decode(
+          buffer.slice(seg.start + 4 + XMP_PREAMBLE.length, seg.end)
+        );
+        xmp = parseXmpData(xmpText);
+      }
+    }
+  }
+  return { iptc, xmp };
+}
+
+/**
+ * Liefert die in einem Foto bereits vorhandenen Stichworte und die vorhandene
+ * Beschreibung. XMP hat Vorrang vor IPTC: IPTC kürzt jedes Stichwort auf 64
+ * Byte, XMP nicht - stehen beide in der Datei, ist die XMP-Fassung die
+ * vollständigere. Gibt bei Formaten ohne Direkteinbettung oder bei
+ * unlesbaren Dateien stillschweigend leere Werte zurück; ein Foto ohne
+ * Metadaten ist der Normalfall, kein Fehler.
+ *
+ * @param {Uint8Array} buffer
+ * @returns {{keywords: string[], description: string|null}}
+ */
+function readExistingKeywords(buffer) {
+  try {
+    const { iptc, xmp } = readJpegMetadata(buffer);
+    const source = (xmp && xmp.keywords.length > 0) ? xmp : (iptc || xmp);
+    if (!source) return { keywords: [], description: null };
+    const keywords = [];
+    for (const raw of source.keywords) {
+      const k = typeof raw === "string" ? raw.trim() : "";
+      // Dubletten fallen weg: dasselbe Stichwort in IPTC und XMP ist der
+      // Regelfall, und der Nutzer soll es nicht doppelt angeboten bekommen.
+      if (k && !keywords.includes(k)) keywords.push(k);
+    }
+    const description = source.description && source.description.trim() ? source.description.trim() : null;
+    return { keywords, description };
+  } catch (e) {
+    return { keywords: [], description: null };
+  }
+}
+
+/**
  * Liest eine gerade erzeugte JPEG-Bufferkopie erneut ein und prüft, ob die
  * IPTC- UND XMP-Stichworte SOWIE die Beschreibung exakt den erwarteten Werten
  * entsprechen. Nur wenn alles übereinstimmt, gilt der Schreibvorgang als sicher.
@@ -517,30 +714,7 @@ function verifyWrittenJpegKeywords(writtenBuffer, expectedKeywords, expectedDesc
   );
 
   try {
-    const { segments } = parseJpegSegments(writtenBuffer);
-    let iptcData = null;
-    let xmpData = null;
-
-    for (const seg of segments) {
-      if (seg.marker === 0xed) {
-        const prefix = readAsciiPrefix(writtenBuffer, seg.start + 4, PHOTOSHOP_PREAMBLE.length);
-        if (prefix === PHOTOSHOP_PREAMBLE) {
-          const irbBuffer = writtenBuffer.slice(seg.start + 4 + PHOTOSHOP_PREAMBLE.length, seg.end);
-          const irbs = parseIrbs(irbBuffer);
-          for (const irb of irbs) {
-            if (irb.resourceId === 0x0404) iptcData = parseIptcIimData(irb.data);
-          }
-        }
-      } else if (seg.marker === 0xe1) {
-        const prefix = readAsciiPrefix(writtenBuffer, seg.start + 4, XMP_PREAMBLE.length);
-        if (prefix === XMP_PREAMBLE) {
-          const xmpText = new TextDecoder("utf-8").decode(
-            writtenBuffer.slice(seg.start + 4 + XMP_PREAMBLE.length, seg.end)
-          );
-          xmpData = parseXmpData(xmpText);
-        }
-      }
-    }
+    const { iptc: iptcData, xmp: xmpData } = readJpegMetadata(writtenBuffer);
 
     const iptcKeywordsOk = iptcData && JSON.stringify(iptcData.keywords) === JSON.stringify(expectedIptcKeywords);
     const xmpKeywordsOk = xmpData && JSON.stringify(xmpData.keywords) === JSON.stringify(validExpected);
@@ -1052,7 +1226,7 @@ function renderGrid() {
     cell.innerHTML = `
       <div class="checkbox"></div>
       <div class="thumbBox">${entry.thumbUrl ? "" : `<div class="noThumb">…</div>`}</div>
-      <div class="fname">${escapeHtml(entry.name)}</div>
+      <div class="fname">${escapeHtml(photoDisplayName(entry))}</div>
       <div class="badge"></div>
       <div class="keywordIndicator"></div>
       <div class="keywordChipsRow"></div>
@@ -1145,12 +1319,25 @@ function renderCellKeywords(refs, entry) {
   const kws = entry.assignedKeywords;
   refs.keywordIndicator.classList.toggle("hasKeywords", kws.length > 0);
 
-  if (kws.length === 0) {
+  // Stichworte, die schon in der Datei stehen, aber noch nicht übernommen wurden:
+  // als eigener, zurückhaltender Chip anzeigen. Ohne diesen Hinweis müsste man
+  // jedes Foto einzeln öffnen, um überhaupt zu erfahren, dass es welche mitbringt.
+  const vorhandenNichtUebernommen = (entry.existingKeywords || [])
+    .filter((label) => !kws.includes(label)).length;
+
+  if (kws.length === 0 && vorhandenNichtUebernommen === 0) {
     refs.keywordChipsRow.innerHTML = "";
     refs.keywordChipsRow.classList.add("hidden");
     return;
   }
   refs.keywordChipsRow.classList.remove("hidden");
+
+  if (kws.length === 0) {
+    refs.keywordChipsRow.innerHTML =
+      `<span class="miniKwChip miniKwChipExisting" title="Im Foto vorhandene Stichworte – mit Taste T übernehmen">` +
+      `📄 ${vorhandenNichtUebernommen}</span>`;
+    return;
+  }
 
   const MAX_VISIBLE = 3;
   const visible = kws.slice(0, MAX_VISIBLE);
@@ -1158,6 +1345,10 @@ function renderCellKeywords(refs, entry) {
 
   let html = visible.map((label) => `<span class="miniKwChip">${escapeHtml(label)}</span>`).join("");
   if (rest > 0) html += `<span class="miniKwChip miniKwChipMore">+${rest}</span>`;
+  if (vorhandenNichtUebernommen > 0) {
+    html += `<span class="miniKwChip miniKwChipExisting" title="Weitere im Foto vorhandene Stichworte – mit Taste T übernehmen">` +
+      `📄 ${vorhandenNichtUebernommen}</span>`;
+  }
   refs.keywordChipsRow.innerHTML = html;
 }
 
@@ -1707,6 +1898,90 @@ function removeContainerFromSelection(container) {
   refreshAfterKeywordChange(targets);
 }
 
+/* ------------------------------------------------------------
+   BEREITS IM FOTO VORHANDENE STICHWORTE (F8)
+   ------------------------------------------------------------
+   Viele Fotos bringen aus einer früheren Verschlagwortung schon IPTC/XMP-
+   Stichworte mit. Sie werden beim Einlesen mitgelesen (readExistingKeywords)
+   und hier zur Übernahme angeboten - NICHT automatisch zugewiesen: was in der
+   Datei steht, ist eine Aussage des vorherigen Programms, keine des Nutzers.
+   Erst die Übernahme macht daraus eine Zuweisung, die dann auch in die
+   Zieldatei geschrieben wird.
+   ------------------------------------------------------------ */
+
+/**
+ * Sammelt die in den Zielfotos vorhandenen Stichworte ein und zählt, auf wie
+ * vielen davon jedes vorkommt. Sortiert nach Häufigkeit, dann alphabetisch.
+ * @param {number[]} targetIndices
+ * @returns {Array<{label: string, count: number, assignedToAll: boolean}>}
+ */
+function collectExistingKeywords(targetIndices) {
+  const counts = new Map();
+  for (const i of targetIndices) {
+    const entry = state.photos[i];
+    if (!entry || !entry.existingKeywords) continue;
+    for (const label of entry.existingKeywords) {
+      counts.set(label, (counts.get(label) || 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .map(([label, count]) => ({
+      label,
+      count,
+      assignedToAll: targetIndices.every((i) => state.photos[i].assignedKeywords.includes(label)),
+    }))
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, "de"));
+}
+
+/**
+ * Rendert die gefundenen Stichworte als Chips in einen Container. Ein Klick
+ * schaltet das Stichwort für die Zielfotos um (zuweisen/entfernen), der Knopf
+ * „Alle übernehmen" weist alle gefundenen auf einmal zu.
+ *
+ * @param {string} sectionId - Abschnitt, der bei leerem Ergebnis ausgeblendet wird
+ * @param {string} rowId - Container für die Chips
+ * @param {number[]} targetIndices
+ * @param {Function} onChange - wird nach jeder Änderung aufgerufen (Neuzeichnen)
+ */
+function renderExistingKeywordRow(sectionId, rowId, targetIndices, onChange) {
+  const section = document.getElementById(sectionId);
+  const row = document.getElementById(rowId);
+  const found = collectExistingKeywords(targetIndices);
+
+  section.classList.toggle("hidden", found.length === 0);
+  if (found.length === 0) return;
+
+  row.innerHTML = "";
+  const notYetAssigned = found.filter((f) => !f.assignedToAll);
+  if (notYetAssigned.length > 1) {
+    const all = document.createElement("button");
+    all.className = "assignContainerChip";
+    all.innerHTML = `<span>Alle übernehmen</span><span class="chipCount">${notYetAssigned.length}</span>`;
+    all.addEventListener("click", () => {
+      addKeywordsToTargets(targetIndices, notYetAssigned.map((f) => f.label));
+      onChange();
+    });
+    row.appendChild(all);
+  }
+
+  found.forEach((f) => {
+    const chip = document.createElement("button");
+    chip.className = "assignContainerChip existingKeywordChip";
+    chip.classList.toggle("assigned", f.assignedToAll);
+    chip.title = f.assignedToAll ? "Klicken entfernt die Zuweisung wieder" : "Klicken übernimmt das Stichwort";
+    // Die Zahl erscheint nur bei Mehrfachauswahl - bei einem einzelnen Foto
+    // wäre "1" an jedem Chip reines Rauschen.
+    const badge = targetIndices.length > 1 ? `<span class="chipCount">${f.count}</span>` : "";
+    chip.innerHTML = `<span>${escapeHtml(f.label)}</span>${badge}`;
+    chip.addEventListener("click", () => {
+      if (f.assignedToAll) removeKeywordsFromTargets(targetIndices, [f.label]);
+      else addKeywordsToTargets(targetIndices, [f.label]);
+      onChange();
+    });
+    row.appendChild(chip);
+  });
+}
+
 /* ============================================================
    STICHWORT-ZUWEISUNGS-PANEL (Taste T)
    ============================================================ */
@@ -1748,6 +2023,10 @@ function renderKeywordAssignPanel() {
     ? "Wird auf 1 Foto angewendet."
     : `Wird auf ${targets.length} ausgewählte Fotos angewendet.`;
 
+  renderExistingKeywordRow("assignExistingSection", "assignExistingRow", targets, () => {
+    refreshAfterKeywordChange(targets);
+    renderKeywordAssignPanel();
+  });
   renderAssignFavoritesRow(targets);
   renderAssignContainerRow("assignGroupsRow", getCatalog().groups, targets);
   renderAssignContainerRow("assignSetsRow", getCatalog().sets, targets);
@@ -2014,7 +2293,7 @@ function ensureLightboxImgEl() {
 
 async function renderLightbox() {
   const entry = state.photos[lightboxIndex];
-  document.getElementById("lbFilename").textContent = entry.name;
+  document.getElementById("lbFilename").textContent = photoDisplayName(entry);
   document.getElementById("lbIndex").textContent = `${lightboxIndex + 1} / ${state.photos.length}`;
 
   ensureLightboxImgEl();
@@ -2627,6 +2906,9 @@ function renderLightboxPanel() {
   if (lightboxIndex === -1) return;
   const entry = state.photos[lightboxIndex];
   renderLbAssignedChips(entry);
+  renderExistingKeywordRow("lbExistingSection", "lbExistingRow", [lightboxIndex], () => {
+    refreshAfterLightboxKeywordChange();
+  });
   renderLbFavoritesRow(entry);
   renderLbContainerRow("lbGroupsRow", getCatalog().groups, entry, applyContainerToLightbox, removeContainerFromLightbox);
   renderLbContainerRow("lbSetsRow", getCatalog().sets, entry, applyContainerToLightbox, removeContainerFromLightbox);
@@ -3092,19 +3374,13 @@ document.getElementById("importSettingsFile").addEventListener("change", async (
       throw new Error("Ungültiges Format der Einstellungsdatei.");
     }
     // Importierte Daten stammen aus einer beliebigen Datei - vor der Übernahme
-    // auf die erwartete Form bringen (siehe normalizeKeywordCatalog).
-    parsed.presets = normalizePresets(parsed.presets);
-    if (!parsed.keywordCatalog || typeof parsed.keywordCatalog !== "object") {
-      parsed.keywordCatalog = createEmptyKeywordCatalog();
-    }
-    normalizeKeywordCatalog(parsed.keywordCatalog);
-    if (typeof parsed.lastPreset !== "string" || !parsed.presets[parsed.lastPreset]) {
-      parsed.lastPreset = null;
-    }
-    appSettings = parsed;
+    // auf die erwartete Form bringen (siehe normalizeSettings).
+    appSettings = normalizeSettings(parsed);
     saveSettings(appSettings);
     applyDefaultFormatIfNone();
     refreshPresetSelect();
+    state.includeSubfolders = appSettings.includeSubfolders;
+    includeSubfoldersCheckbox.checked = state.includeSubfolders;
     showToast("Einstellungen erfolgreich importiert.", "success");
   } catch (e) {
     console.error(e);
@@ -3231,7 +3507,7 @@ async function executeActions(eventText) {
           metadataEmbedded = true;
         } else {
           showToast(
-            `Hinweis: Metadaten für „${entry.name}“ konnten nicht direkt in die Datei geschrieben werden - sie liegen als XMP-Sidecar-Datei bei.`,
+            `Hinweis: Metadaten für „${photoDisplayName(entry)}“ konnten nicht direkt in die Datei geschrieben werden - sie liegen als XMP-Sidecar-Datei bei.`,
             "info",
             5000
           );
@@ -3301,33 +3577,37 @@ async function executeActions(eventText) {
         }
       }
 
-      await state.sourceDirHandle.removeEntry(entry.name);
+      // Den Ordner nehmen, in dem die Datei TATSÄCHLICH liegt - beim Einlesen mit
+      // Unterordnern ist das nicht zwingend das Quellverzeichnis.
+      await entry.dirHandle.removeEntry(entry.name);
 
       counter++;
       done++;
-      showProgress(true, "Verschiebe Dateien…", done, total, entry.name);
+      showProgress(true, "Verschiebe Dateien…", done, total, photoDisplayName(entry));
     } catch (e) {
-      console.error("Fehler beim Verschieben von", entry.name, e);
-      errors.push(`${entry.name}: ${e.message}`);
+      console.error("Fehler beim Verschieben von", photoDisplayName(entry), e);
+      errors.push(`${photoDisplayName(entry)}: ${e.message}`);
       failedEntries.add(entry);
       if (e.isVerificationFailure) verificationFailureCount++;
       done++;
-      showProgress(true, "Verschiebe Dateien…", done, total, entry.name);
+      showProgress(true, "Verschiebe Dateien…", done, total, photoDisplayName(entry));
     }
   }
 
   // 2) Löschen im Quellverzeichnis
   for (const entry of deleteTargets) {
     try {
-      await state.sourceDirHandle.removeEntry(entry.name);
+      // Den Ordner nehmen, in dem die Datei TATSÄCHLICH liegt - beim Einlesen mit
+      // Unterordnern ist das nicht zwingend das Quellverzeichnis.
+      await entry.dirHandle.removeEntry(entry.name);
       done++;
-      showProgress(true, "Lösche Dateien…", done, total, entry.name);
+      showProgress(true, "Lösche Dateien…", done, total, photoDisplayName(entry));
     } catch (e) {
-      console.error("Fehler beim Löschen von", entry.name, e);
-      errors.push(`${entry.name}: ${e.message}`);
+      console.error("Fehler beim Löschen von", photoDisplayName(entry), e);
+      errors.push(`${photoDisplayName(entry)}: ${e.message}`);
       failedEntries.add(entry);
       done++;
-      showProgress(true, "Lösche Dateien…", done, total, entry.name);
+      showProgress(true, "Lösche Dateien…", done, total, photoDisplayName(entry));
     }
   }
 
