@@ -3614,6 +3614,8 @@ document.getElementById("importSettingsFile").addEventListener("change", async (
 
 const eventModalOverlay = document.getElementById("eventModalOverlay");
 
+document.getElementById("btnUndoLastRun").addEventListener("click", undoLastRun);
+
 document.getElementById("btnRunActions").addEventListener("click", () => {
   const moveCount = state.photos.filter((p) => p.action === "move").length;
   const deleteCount = state.photos.filter((p) => p.action === "delete").length;
@@ -4027,6 +4029,20 @@ async function executeActions(eventText, plan) {
       // Unterordnern ist das nicht zwingend das Quellverzeichnis.
       await entry.dirHandle.removeEntry(entry.name);
 
+      // Erst jetzt protokollieren: was hier steht, ist tatsächlich geschehen.
+      moveLog.push({
+        entry,
+        sourceName: entry.name,
+        sourceLabel: photoDisplayName(entry),
+        sourceDirHandle: entry.dirHandle,
+        sourceRelPath: entry.relPath,
+        dirLabel,
+        targetDirHandle: targetDir,
+        targetName: finalName,
+        hasSidecar: hasMetadataToWrite,
+        sidecarName: `${finalBaseNameWithoutExt}.xmp`,
+      });
+
       counter++;
       done++;
       showProgress(true, "Verschiebe Dateien…", done, total, photoDisplayName(entry));
@@ -4041,11 +4057,13 @@ async function executeActions(eventText, plan) {
   }
 
   // 2) Löschen im Quellverzeichnis
+  const deleteLog = [];
   for (const entry of deleteTargets) {
     try {
       // Den Ordner nehmen, in dem die Datei TATSÄCHLICH liegt - beim Einlesen mit
       // Unterordnern ist das nicht zwingend das Quellverzeichnis.
       await entry.dirHandle.removeEntry(entry.name);
+      deleteLog.push(photoDisplayName(entry));
       done++;
       showProgress(true, "Lösche Dateien…", done, total, photoDisplayName(entry));
     } catch (e) {
@@ -4082,6 +4100,24 @@ async function executeActions(eventText, plan) {
   renderGrid();
   updateBottomBar();
 
+  // Protokoll und Rückgängig-Angebot: erst nach dem Durchgang, und nur, wenn
+  // tatsächlich etwas passiert ist.
+  if (moveLog.length > 0 || deleteLog.length > 0) {
+    state.lastRunLog = {
+      zeitpunkt: new Date(),
+      quelle: state.sourceDirHandle ? state.sourceDirHandle.name : "?",
+      ziel: state.targetDirHandle ? state.targetDirHandle.name : "–",
+      verschoben: moveLog,
+      geloescht: deleteLog,
+      fehlgeschlagen: errors.slice(),
+      // Ein bereits zurückgenommener Durchgang darf nicht ein zweites Mal
+      // zurückgenommen werden - die Zieldateien gibt es dann nicht mehr.
+      zurueckgenommen: false,
+    };
+    updateUndoButtonState();
+    if (state.targetDirHandle) await writeRunProtocol(state.targetDirHandle, state.lastRunLog);
+  }
+
   if (errors.length > 0) {
     if (verificationFailureCount > 0) {
       showToast(
@@ -4096,6 +4132,226 @@ async function executeActions(eventText, plan) {
     }
   } else {
     showToast(`Fertig: ${moveTargets.length} verschoben, ${deleteTargets.length} gelöscht.`, "success");
+  }
+}
+
+/* ============================================================
+   PROTOKOLL & RÜCKGÄNGIG (F5)
+   ============================================================
+   Zwei getrennte Sicherheitsnetze mit unterschiedlicher Reichweite:
+
+   1. Das PROTOKOLL ist eine Textdatei im Zielverzeichnis, die jeden Durchgang
+      festhält - was wohin verschoben und was gelöscht wurde. Sie überlebt den
+      Reload, den Programmwechsel und den Rechner. Für gelöschte Dateien ist sie
+      das Einzige, was bleibt: die File System Access API kennt keinen
+      Papierkorb, ein Wiederherstellen ist ausgeschlossen. Zu wissen, WAS weg
+      ist, ist dann immer noch besser als nichts.
+
+   2. RÜCKGÄNGIG bewegt die verschobenen Dateien an ihren Ursprungsort zurück -
+      nur für den letzten Durchgang und nur in derselben Sitzung, weil dafür die
+      Verzeichnis-Handles gebraucht werden. Gelöschte Dateien sind davon
+      ausdrücklich nicht erfasst.
+
+   Das Zurückbewegen benutzt dieselbe Reihenfolge wie das Verschieben: erst
+   schreiben, dann prüfen, erst danach löschen. Ein Rückgängig, das die
+   Zieldatei entfernt, bevor die zurückgeschriebene geprüft ist, wäre ein
+   Datenverlustpfad in einer Funktion, die genau davor schützen soll.
+   ============================================================ */
+
+const PROTOCOL_FILE_NAME = "foto-importer-protokoll.txt";
+
+/** Formatiert einen Zeitpunkt als "12.08.2026, 14:32:05". */
+function formatProtocolTimestamp(date) {
+  const zwei = (n) => String(n).padStart(2, "0");
+  return `${zwei(date.getDate())}.${zwei(date.getMonth() + 1)}.${date.getFullYear()}, ` +
+    `${zwei(date.getHours())}:${zwei(date.getMinutes())}:${zwei(date.getSeconds())}`;
+}
+
+/** Baut den Textblock eines Durchgangs für die Protokolldatei. */
+function buildProtocolEntry(log) {
+  const zeilen = [];
+  zeilen.push(`=== Durchgang ${formatProtocolTimestamp(log.zeitpunkt)} ===`);
+  zeilen.push(`Quelle: ${log.quelle}`);
+  zeilen.push(`Ziel:   ${log.ziel}`);
+  zeilen.push("");
+
+  zeilen.push(`Verschoben (${log.verschoben.length}):`);
+  for (const m of log.verschoben) {
+    const ziel = m.dirLabel ? `${m.dirLabel}/${m.targetName}` : m.targetName;
+    zeilen.push(`  ${m.sourceLabel}  ->  ${ziel}`);
+  }
+  if (log.verschoben.length === 0) zeilen.push("  (keine)");
+  zeilen.push("");
+
+  zeilen.push(`Geloescht (${log.geloescht.length}) - endgueltig, kein Papierkorb:`);
+  for (const name of log.geloescht) zeilen.push(`  ${name}`);
+  if (log.geloescht.length === 0) zeilen.push("  (keine)");
+
+  if (log.fehlgeschlagen.length > 0) {
+    zeilen.push("");
+    zeilen.push(`Fehlgeschlagen (${log.fehlgeschlagen.length}):`);
+    for (const fehler of log.fehlgeschlagen) zeilen.push(`  ${fehler}`);
+  }
+  zeilen.push("");
+  return zeilen.join("\n");
+}
+
+/**
+ * Hängt den Durchgang an die Protokolldatei im Zielverzeichnis an.
+ *
+ * Bewusst eine einzige, fortgeschriebene Datei statt einer pro Durchgang: sie
+ * ist als Ganzes lesbar und wandert beim Kopieren des Archivs mit. Angehängt
+ * wird per Lesen und Neuschreiben - die File System Access API kennt zwar einen
+ * Append-Modus, aber ein vollständig neu geschriebener kleiner Textbestand ist
+ * hier robuster als ein Positionszeiger.
+ *
+ * Scheitert das Schreiben, ist das kein Grund, den Durchgang als gescheitert zu
+ * melden: die Fotos liegen bereits richtig. Es gibt einen Hinweis, mehr nicht.
+ */
+async function writeRunProtocol(targetDirHandle, log) {
+  try {
+    let bisher = "";
+    try {
+      const vorhanden = await targetDirHandle.getFileHandle(PROTOCOL_FILE_NAME);
+      bisher = await (await vorhanden.getFile()).text();
+    } catch (e) {
+      if (e.name !== "NotFoundError") throw e;
+      bisher =
+        "Protokoll des Foto-Importers.\n" +
+        "Haelt fest, was in welchem Durchgang wohin verschoben und was geloescht wurde.\n" +
+        "Geloeschte Dateien sind endgueltig weg - diese Datei ist der einzige Nachweis darueber.\n\n";
+    }
+
+    const handle = await targetDirHandle.getFileHandle(PROTOCOL_FILE_NAME, { create: true });
+    const writable = await handle.createWritable();
+    await writable.write(bisher + buildProtocolEntry(log) + "\n");
+    await writable.close();
+  } catch (e) {
+    console.warn("Protokolldatei konnte nicht geschrieben werden:", e);
+    showToast("Hinweis: Die Protokolldatei im Zielverzeichnis konnte nicht geschrieben werden.", "info", 5000);
+  }
+}
+
+/** Blendet den Rückgängig-Knopf ein, sobald es etwas zurückzunehmen gibt. */
+function updateUndoButtonState() {
+  const btn = document.getElementById("btnUndoLastRun");
+  if (!btn) return;
+  const log = state.lastRunLog;
+  const moeglich = !!log && !log.zurueckgenommen && log.verschoben.length > 0;
+  btn.classList.toggle("hidden", !moeglich);
+  if (moeglich) {
+    btn.textContent = `↩ ${log.verschoben.length} zurück`;
+    btn.title = `Die ${log.verschoben.length} verschobenen Datei(en) des letzten Durchgangs an ihren Ursprungsort zurückbewegen.` +
+      (log.geloescht.length > 0 ? ` Die ${log.geloescht.length} gelöschte(n) Datei(en) sind davon nicht erfasst.` : "");
+  }
+}
+
+/**
+ * Bewegt die verschobenen Dateien des letzten Durchgangs zurück.
+ *
+ * Reihenfolge je Datei, identisch zum Verschieben: Zieldatei lesen, in den
+ * Ursprungsordner schreiben, die zurückgeschriebene Datei frisch vom
+ * Dateisystem prüfen - und erst danach die Datei im Zielverzeichnis löschen.
+ * Schlägt die Prüfung fehl, bleibt die Zieldatei liegen; im schlimmsten Fall
+ * existiert die Datei dann zweimal, was allemal besser ist als keinmal.
+ */
+async function undoLastRun() {
+  const log = state.lastRunLog;
+  if (!log || log.zurueckgenommen || log.verschoben.length === 0) return;
+
+  const hinweisGeloescht = log.geloescht.length > 0
+    ? `\n\nDie ${log.geloescht.length} gelöschte(n) Datei(en) lassen sich NICHT wiederherstellen - sie sind endgültig weg.`
+    : "";
+  if (!confirm(
+    `${log.verschoben.length} Datei(en) werden aus dem Zielverzeichnis an ihren Ursprungsort zurückbewegt.` +
+    hinweisGeloescht + `\n\nFortfahren?`
+  )) return;
+
+  showProgress(true, "Mache rückgängig…", 0, log.verschoben.length);
+  const zurueck = [];
+  const fehler = [];
+  let done = 0;
+
+  for (const m of log.verschoben) {
+    try {
+      const zielHandle = await m.targetDirHandle.getFileHandle(m.targetName);
+      const zielDatei = await zielHandle.getFile();
+      const inhalt = new Uint8Array(await zielDatei.arrayBuffer());
+
+      // Im Ursprungsordner einen freien Namen suchen: in der Zwischenzeit kann
+      // dort eine neue Datei gleichen Namens liegen (z. B. von der Kamera).
+      const punkt = m.sourceName.lastIndexOf(".");
+      const basis = punkt === -1 ? m.sourceName : m.sourceName.slice(0, punkt);
+      const endung = punkt === -1 ? "" : m.sourceName.slice(punkt + 1);
+      const name = await ensureUniqueName(m.sourceDirHandle, basis, endung, `zurueck|${m.sourceRelPath}`);
+
+      const neuHandle = await m.sourceDirHandle.getFileHandle(name, { create: true });
+      const writable = await neuHandle.createWritable();
+      await writable.write(inhalt);
+      await writable.close();
+
+      // Dieselbe Prüfung wie beim Verschieben, bevor gelöscht wird.
+      const pruefung = await verifyMovedFile(m.sourceDirHandle, name, inhalt, getExtension(name), null, null);
+      if (!pruefung.ok) {
+        throw new Error(`Prüfung der zurückgeschriebenen Datei fehlgeschlagen: ${pruefung.reason}. Die Datei im Zielverzeichnis wurde NICHT gelöscht.`);
+      }
+
+      await m.targetDirHandle.removeEntry(m.targetName);
+      if (m.hasSidecar) {
+        // Die Sidecar-Datei gehört zur Zielfassung; im Quellordner hat sie
+        // nichts verloren. Ihr Fehlen ist kein Fehler.
+        try { await m.targetDirHandle.removeEntry(m.sidecarName); } catch (e) { /* war nicht da */ }
+      }
+
+      // Das Foto wieder in die Liste aufnehmen - mit frischem Handle, denn das
+      // alte zeigte auf die inzwischen gelöschte Ursprungsdatei.
+      const eintrag = createPhotoEntry(name, neuHandle, m.sourceDirHandle, m.sourceRelPath);
+      eintrag.captureDate = m.entry.captureDate;
+      eintrag.fileDate = m.entry.fileDate;
+      eintrag.fileSize = zielDatei.size;
+      eintrag.assignedKeywords = m.entry.assignedKeywords.slice();
+      eintrag.existingKeywords = m.entry.existingKeywords;
+      eintrag.existingDescription = m.entry.existingDescription;
+      zurueck.push(eintrag);
+    } catch (e) {
+      console.error("Rückgängig fehlgeschlagen für", m.targetName, e);
+      fehler.push(`${m.targetName}: ${e.message}`);
+    }
+    done++;
+    showProgress(true, "Mache rückgängig…", done, log.verschoben.length, m.targetName);
+  }
+
+  showProgress(false);
+  log.zurueckgenommen = true;
+  updateUndoButtonState();
+
+  if (zurueck.length > 0) {
+    state.photos = state.photos.concat(zurueck);
+    sortPhotoEntries(state.photos, state.sortKey, state.sortDirection);
+    state.selectedIndices.clear();
+    state.cursorIndex = 0;
+    state.activeFilter = "all";
+    updateFilterButtonsUI();
+    recomputeActionCounts();
+    renderGrid();
+    updateBottomBar();
+  }
+
+  if (state.targetDirHandle) {
+    await writeRunProtocol(state.targetDirHandle, {
+      zeitpunkt: new Date(),
+      quelle: log.ziel,
+      ziel: log.quelle,
+      verschoben: zurueck.map((e) => ({ sourceLabel: `(rückgängig) ${e.name}`, dirLabel: e.relPath, targetName: e.name })),
+      geloescht: [],
+      fehlgeschlagen: fehler,
+    });
+  }
+
+  if (fehler.length > 0) {
+    showToast(`${zurueck.length} zurückbewegt, ${fehler.length} fehlgeschlagen. Details in der Konsole.`, "error", 8000);
+  } else {
+    showToast(`${zurueck.length} Datei(en) zurückbewegt.`, "success");
   }
 }
 

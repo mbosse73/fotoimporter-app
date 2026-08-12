@@ -98,6 +98,13 @@
     }
 
     namen() { return [...this.files.keys()].sort(); }
+
+    /**
+     * Nur die Fotodateien. Jeder Durchgang schreibt zusätzlich eine
+     * Protokolldatei ins Zielverzeichnis (F5) - in Prüfungen, die von den
+     * verschobenen Fotos handeln, ist sie nur Rauschen.
+     */
+    fotoNamen() { return this.namen().filter((n) => n !== PROTOCOL_FILE_NAME); }
   }
 
   /** Erzeugt ein echtes, decodierbares JPEG über den Canvas. */
@@ -500,6 +507,120 @@
     }
 
     /* ============================================================
+       PROTOKOLL UND RÜCKGÄNGIG (F5)
+       ============================================================ */
+    bereich("Protokoll");
+
+    {
+      const quelle = new AttrappenVerzeichnis("Karte");
+      const ziel = new AttrappenVerzeichnis("Archiv");
+      const a = await jpegDatei("prot1");
+      const b = await jpegDatei("prot2");
+      quelle.files.set("a.jpg", a);
+      quelle.files.set("b.jpg", b);
+
+      const e1 = fotoEintrag("a.jpg", a, []); e1.action = "move";
+      const e2 = fotoEintrag("b.jpg", b, []); e2.action = "delete";
+      namensschema([{ type: "counter" }]);
+      await durchgang([e1, e2], quelle, ziel, "");
+
+      pruefe("eine Protokolldatei wird angelegt", ziel.files.has(PROTOCOL_FILE_NAME), ziel.namen().join(","));
+      const text = ziel.files.has(PROTOCOL_FILE_NAME) ? await ziel.files.get(PROTOCOL_FILE_NAME).text() : "";
+      pruefe("das Protokoll nennt Quelle und Ziel",
+        text.includes("Quelle: Karte") && text.includes("Ziel:   Archiv"));
+      pruefe("das Protokoll nennt die Verschiebung mit Quell- und Zielnamen",
+        text.includes("a.jpg  ->  001.jpg"), text.split("\n").find((z) => z.includes("->")));
+      pruefe("das Protokoll nennt die Löschung", text.includes("b.jpg") && text.includes("Geloescht (1)"));
+      pruefe("das Protokoll weist auf den fehlenden Papierkorb hin",
+        text.includes("kein Papierkorb"));
+
+      // Ein zweiter Durchgang darf den ersten nicht überschreiben - das Protokoll
+      // ist ein fortgeschriebener Bestand, keine Momentaufnahme.
+      const c = await jpegDatei("prot3");
+      quelle.files.set("c.jpg", c);
+      const e3 = fotoEintrag("c.jpg", c, []); e3.action = "move";
+      await durchgang([e3], quelle, ziel, "");
+      const text2 = await ziel.files.get(PROTOCOL_FILE_NAME).text();
+      pruefe("ein zweiter Durchgang wird angehängt, nicht ersetzt",
+        (text2.match(/=== Durchgang /g) || []).length === 2,
+        (text2.match(/=== Durchgang /g) || []).length);
+    }
+
+    bereich("Rückgängig");
+
+    {
+      const quelle = new AttrappenVerzeichnis("quelle");
+      const ziel = new AttrappenVerzeichnis("ziel");
+      const a = await jpegDatei("u1");
+      const originalBytes = new Uint8Array(await a.arrayBuffer());
+      quelle.files.set("original.jpg", a);
+
+      const e1 = fotoEintrag("original.jpg", a, ["Berg"]); e1.action = "move";
+      namensschema([{ type: "counter" }]);
+      await durchgang([e1], quelle, ziel, "Tour");
+
+      pruefe("vor dem Rückgängig ist die Quelle leer", !quelle.files.has("original.jpg"));
+      pruefe("ein Rückgängig wird angeboten",
+        state.lastRunLog && state.lastRunLog.verschoben.length === 1);
+
+      await undoLastRun();
+
+      pruefe("die Datei liegt wieder im Quellordner", quelle.files.has("original.jpg"), quelle.namen().join(","));
+      pruefe("die Zieldatei ist entfernt", !ziel.files.has("001.jpg"), ziel.fotoNamen().join(","));
+      pruefe("auch die Sidecar-Datei ist entfernt", !ziel.files.has("001.xmp"), ziel.fotoNamen().join(","));
+
+      if (quelle.files.has("original.jpg")) {
+        const zurueck = new Uint8Array(await quelle.files.get("original.jpg").arrayBuffer());
+        const vorher = getComparableImageBytes(originalBytes, "jpg");
+        const nachher = getComparableImageBytes(zurueck, "jpg");
+        let gleich = vorher.length === nachher.length;
+        if (gleich) for (let i = 0; i < vorher.length; i++) if (vorher[i] !== nachher[i]) { gleich = false; break; }
+        pruefe("die zurückgeholten Bilddaten sind unverändert", gleich, vorher.length + " vs " + nachher.length);
+      }
+
+      pruefe("das Foto ist wieder in der Liste",
+        state.photos.some((p) => p.name === "original.jpg"), state.photos.map((p) => p.name).join(","));
+      pruefe("die zugewiesenen Stichworte bleiben erhalten",
+        state.photos.some((p) => p.name === "original.jpg" && p.assignedKeywords.join(",") === "Berg"));
+      pruefe("ein zweites Rückgängig ist ausgeschlossen", state.lastRunLog.zurueckgenommen === true);
+    }
+
+    {
+      // Der wichtigste Fall: schlägt die Prüfung der zurückgeschriebenen Datei
+      // fehl, darf die Zieldatei NICHT gelöscht werden. Lieber zweimal vorhanden
+      // als keinmal.
+      const quelle = new AttrappenVerzeichnis("quelle");
+      const ziel = new AttrappenVerzeichnis("ziel");
+      const a = await jpegDatei("u2");
+      quelle.files.set("original.jpg", a);
+
+      const e1 = fotoEintrag("original.jpg", a, []); e1.action = "move";
+      namensschema([{ type: "counter" }]);
+      await durchgang([e1], quelle, ziel, "");
+
+      // Beim Zurückschreiben landet absichtlich ein zu kurzer Inhalt im Quellordner.
+      const echtesGetFileHandle = quelle.getFileHandle;
+      quelle.getFileHandle = async function (name, options) {
+        const handle = await echtesGetFileHandle.call(this, name, options);
+        const verzeichnis = this;
+        return {
+          getFile: handle.getFile,
+          async createWritable() {
+            return {
+              async write() { /* verschluckt den Inhalt */ },
+              async close() { verzeichnis.files.set(name, new File([new Uint8Array(3)], name)); },
+            };
+          },
+        };
+      };
+      await undoLastRun();
+      quelle.getFileHandle = echtesGetFileHandle;
+
+      pruefe("bei fehlgeschlagener Prüfung bleibt die Zieldatei liegen",
+        ziel.files.has("001.jpg"), ziel.fotoNamen().join(","));
+    }
+
+    /* ============================================================
        TROCKENLAUF (F2)
        ============================================================ */
     bereich("Trockenlauf");
@@ -654,7 +775,7 @@
       pruefe("jedes Foto landet im Ordner seines Aufnahmemonats",
         mai && juni && mai.namen().join(",") === "001.jpg" && juni.namen().join(",") === "002.jpg",
         (mai && mai.namen().join(",")) + " | " + (juni && juni.namen().join(",")));
-      pruefe("im Wurzelverzeichnis des Ziels liegt keine Datei", ziel.namen().length === 0, ziel.namen().join(","));
+      pruefe("im Wurzelverzeichnis des Ziels liegt kein Foto", ziel.fotoNamen().length === 0, ziel.fotoNamen().join(","));
 
       currentSubfolderMode = merke;
     }
@@ -842,7 +963,7 @@
         !unter.files.has("unten.jpg"), unter.namen().join(","));
       pruefe("die Datei aus der obersten Ebene wird dort gelöscht",
         !quelle.files.has("oben.jpg"), quelle.namen().join(","));
-      pruefe("beide Fotos liegen im Ziel", ziel.namen().join(",") === "001.jpg,002.jpg", ziel.namen().join(","));
+      pruefe("beide Fotos liegen im Ziel", ziel.fotoNamen().join(",") === "001.jpg,002.jpg", ziel.fotoNamen().join(","));
     }
 
     {
@@ -930,7 +1051,7 @@
       await durchgang([eintrag], quelle, ziel, "Winter Tour");
 
       pruefe("Zieldatei und Sidecar tragen den erwarteten Namen",
-        ziel.namen().join(",") === "20240517_Winter_Tour.jpg,20240517_Winter_Tour.xmp", ziel.namen().join(","));
+        ziel.fotoNamen().join(",") === "20240517_Winter_Tour.jpg,20240517_Winter_Tour.xmp", ziel.fotoNamen().join(","));
       pruefe("die Quelldatei wurde erst danach gelöscht", !quelle.files.has("r.jpg"));
 
       if (ziel.files.has("20240517_Winter_Tour.jpg")) {
